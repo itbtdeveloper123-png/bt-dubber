@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+:root {
+  font-family: 'Kantumruy Pro', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+@layer utilities {
+  .font-khmer {
+    font-family: 'Kantumruy Pro', 'Plus Jakarta Sans', sans-serif;
+  }
+}
+
+body {
+  font-family: 'Kantumruy Pro', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: #F3F4F6;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbars for High Density theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #E5E7EB;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #9CA3AF;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6B7280;
+}
+

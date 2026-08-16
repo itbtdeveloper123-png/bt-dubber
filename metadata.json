@@ -1,0 +1,6 @@
+{
+  "name": "Khmer Movie Recap Scriptwriter & Audio Translator",
+  "description": "AI-powered foreign movie transcript translator and dramatic Khmer movie recap scriptwriter for video creators and TTS voiceover.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
