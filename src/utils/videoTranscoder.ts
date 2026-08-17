@@ -8,14 +8,9 @@ export function isLikelyUnsupportedVideo(fileOrName: File | string): boolean {
   const name = typeof fileOrName === 'string' ? fileOrName : fileOrName.name;
   if (!name) return false;
 
-  // Check file extension
+  // Check unsupported container / codec extensions
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (['mov', 'mkv', 'avi', 'flv', 'wmv', 'ts', 'm4v', 'hevc'].includes(ext)) {
-    return true;
-  }
-
-  // Check iOS camera default filenames (e.g. IMG_9322.MP4, IMG_1234.MOV) which use HEVC H.265
-  if (/^IMG_\d+/i.test(name)) {
     return true;
   }
 
@@ -107,19 +102,17 @@ export async function convertVideoToH264MP4(
 
     if (onProgress) onProgress(35, 'ចាប់ផ្តើមបម្លែង Video Codec ល្បឿនលឿន (Turbo Web MP4)...');
 
-    // TURBO TRANSCODE COMMAND:
-    // Scale to 480p @ 24fps with ultrafast preset and fastdecode tuning
-    // Cuts encoding time by 90% while providing crystal-clear studio preview!
+    // HIGH-DEFINITION HD H.264 ENCODING:
+    // Retains full native resolution (1080p / 2K) with crisp CRF 21 for crystal-clear HD preview!
     await ffmpeg.exec([
       '-i', inputName,
-      '-vf', 'scale=-2:480,fps=24',
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
       '-vcodec', 'libx264',
-      '-preset', 'ultrafast',
-      '-tune', 'fastdecode',
-      '-crf', '28',
+      '-preset', 'veryfast',
+      '-crf', '21',
       '-pix_fmt', 'yuv420p',
       '-acodec', 'aac',
-      '-b:a', '96k',
+      '-b:a', '192k',
       '-threads', '0',
       '-movflags', '+faststart',
       outputName
@@ -139,10 +132,10 @@ export async function convertVideoToH264MP4(
 
     let blob: Blob;
     if (data instanceof Uint8Array) {
-      blob = new Blob([data], { type: 'video/mp4' });
+      blob = new Blob([data as unknown as BlobPart], { type: 'video/mp4' });
     } else if (typeof data === 'string') {
       const encoder = new TextEncoder();
-      blob = new Blob([encoder.encode(data)], { type: 'video/mp4' });
+      blob = new Blob([encoder.encode(data) as unknown as BlobPart], { type: 'video/mp4' });
     } else {
       blob = new Blob([data as any], { type: 'video/mp4' });
     }

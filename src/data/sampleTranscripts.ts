@@ -1,53 +1,63 @@
 import { SampleTranscript, MovieRecapResult } from '../types';
 
 export const DEFAULT_DEMO_RECAP: MovieRecapResult = {
-  movie_title: "ប្រតិបត្តិការប្លន់ធនាគារ Cyber Vault Heist",
-  total_recap_duration_est: "01:30",
+  movie_title: "ប្រតិបត្តិការប្លន់ធនាគារ សាយប័រ វ៉ូល Heist",
+  total_recap_duration_est: "00:45",
   genre_tag: "Action / Cyber Crime",
   created_at: new Date().toISOString(),
-  videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+  videoUrl: "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
   videoFileName: "Cyber_Vault_Trailer_1080p.mp4",
   mediaType: "video",
   recap_segments: [
     {
       segment_id: 1,
       start_time: "00:00",
-      end_time: "00:15",
-      original_summary: "Commander Marcus leads an elite hacker team into the vault under heavy midnight rainfall.",
-      khmer_script: "រឿងរ៉ាវបានចាប់ផ្ដើមឡើងនៅពាក់កណ្ដាលអធ្រាត្រ ក្រោមតំណក់ទឹកភ្លៀងយ៉ាងខ្លាំង លោកមេបញ្ជាការ Marcus បានដឹកនាំក្រុម Hackers លំដាប់ពិភពលោក លួចចូលទៅក្នុងបន្ទប់សោរ Cyber Vault ដ៏រឹងមាំបំផុត!",
-      voice_tone: "dramatic"
+      end_time: "00:08",
+      original_summary: "Ready team? Tonight we break into the Cyber Vault!",
+      khmer_script: "ត្រៀមខ្លួនរួចរាល់ហើយឬនៅ? យប់នេះយើងត្រូវយកទិន្នន័យពីបន្ទប់សោរ សាយប័រ វ៉ូល ឱ្យបាន!",
+      voice_tone: "excited",
+      speaker_gender: "male",
+      speaker_name: "ម៉ាកុស"
     },
     {
       segment_id: 2,
-      start_time: "00:15",
-      end_time: "00:32",
-      original_summary: "They bypass the quantum laser grid in 10 seconds, but vault door seals behind them.",
-      khmer_script: "ទោះបីជាពួកគេអាចរំលងប្រព័ន្ធឡាស៊ែរក្នុងរយៈពេលត្រឹមតែ ១០ វិនាទីក៏ដោយ ប៉ុន្តែភ្លាមៗនោះ ទ្វារដែកថែបដ៏ធំបានបិទជិតឈឹង បិទផ្លូវចេញរបស់ពួកគេទាំងស្រុង!",
-      voice_tone: "tense"
+      start_time: "00:08",
+      end_time: "00:16",
+      original_summary: "Don't worry! I've bypassed the laser security. Move in now!",
+      khmer_script: "កុំបារម្ភអី! ខ្ញុំបានទម្លុះប្រព័ន្ធឡាស៊ែររួចរាល់ហើយ ឆាប់ចូលទៅ!",
+      voice_tone: "dramatic",
+      speaker_gender: "female",
+      speaker_name: "អេលេណា"
     },
     {
       segment_id: 3,
-      start_time: "00:32",
-      end_time: "00:50",
-      original_summary: "Elena reveals she secretly transferred the 500 million credits and alerted SWAT police.",
-      khmer_script: "មិននឹកស្មានថា ដៃគូស្និទ្ធស្នាលបំផុតគឺនាង Elena បានលួចផ្ទេរប្រាក់ ៥០០ លានដុល្លារចេញទៅគណនីសម្ងាត់ រួចបានរាយការណ៍ប្រាប់ប៉ូលីស SWAT ឱ្យមកកម្ទេចក្រុមរបស់ Marcus ចោល!",
-      voice_tone: "mysterious"
+      start_time: "00:16",
+      end_time: "00:25",
+      original_summary: "Hold on! Why is the blast door sealing? Who triggered the lockdown?",
+      khmer_script: "ចាំបន្តិច! ហេតុអ្វីបានជាទ្វារដែកថែបស្រាប់តែបិទជិតបែបនេះ? តើនរណាជាអ្នកបញ្ជា?",
+      voice_tone: "tense",
+      speaker_gender: "male",
+      speaker_name: "ម៉ាកុស"
     },
     {
       segment_id: 4,
-      start_time: "00:50",
-      end_time: "01:10",
-      original_summary: "Marcus uses an experimental magnetic pulse device to escape through sewer pipes.",
-      khmer_script: "ក្នុងស្ថានភាពប្រឈមមុខនឹងសេចក្តីស្លាប់ Marcus បានសម្រេចចិត្តប្រើប្រាស់ឧបករណ៍រលកម៉ាញ៉េទិចពិសេស កម្ទេចបំពង់ខ្យល់ រួចរត់គេចខ្លួនតាមផ្លូវលូក្រោមដីយ៉ាងព្រលឹងចុងសក់!",
-      voice_tone: "excited"
+      start_time: "00:25",
+      end_time: "00:35",
+      original_summary: "I'm sorry Marcus... The 500 million credits belong to me alone!",
+      khmer_script: "សូមអភ័យទោសផង ម៉ាកុស... ប្រាក់ ៥០០ លានដុល្លារនេះ គឺជារបស់ខ្ញុំតែម្នាក់គត់!",
+      voice_tone: "mysterious",
+      speaker_gender: "female",
+      speaker_name: "អេលេណា"
     },
     {
       segment_id: 5,
-      start_time: "01:10",
-      end_time: "01:30",
-      original_summary: "Three months later, Elena finds Marcus sitting in her Monaco armchair with the decryption key.",
-      khmer_script: "បីខែក្រោយមក នៅពេលនាង Elena កំពុងអបអរសាទរនៅលើកប៉ាល់កម្សាន្តលំដាប់ផ្ទះល្វែងនៅ Monaco នាងបានភ្ញាក់ព្រើតយ៉ាងខ្លាំង នៅពេលឃើញ Marcus កំពុងអង្គុយញញឹមរង់ចាំនាងយ៉ាងស្ងៀមស្ងាត់...",
-      voice_tone: "dramatic"
+      start_time: "00:35",
+      end_time: "00:45",
+      original_summary: "You betrayed us Elena! But you will never leave this vault alive!",
+      khmer_script: "នាងបានក្បត់យើង អេលេណា! ប៉ុន្តែនាងកុំសង្ឃឹមថានឹងអាចចាកចេញពីទីនេះទាំងរស់ឱ្យសោះ!",
+      voice_tone: "dramatic",
+      speaker_gender: "male",
+      speaker_name: "ម៉ាកុស"
     }
   ]
 };

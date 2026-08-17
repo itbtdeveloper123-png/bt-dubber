@@ -1,7 +1,7 @@
 export type VoiceTone = 'dramatic' | 'excited' | 'neutral' | 'tense' | 'emotional' | 'mysterious';
-export type SpeakerGender = 'male' | 'female' | 'narrator' | 'multi';
+export type SpeakerGender = 'male' | 'female' | 'male_elder' | 'female_elder' | 'child' | 'villain' | 'narrator' | 'multi' | string;
 
-export type TranslationMode = 'movie_recap' | 'character_dialogue' | 'hybrid_recap_dub';
+export type TranslationMode = 'movie_recap' | 'character_dialogue' | 'word_by_word_lip_sync' | 'hybrid_recap_dub';
 
 export interface RecapSegment {
   segment_id: number;
@@ -29,6 +29,8 @@ export interface MovieRecapResult {
   mediaType?: 'video' | 'audio' | 'text';
   rawFile?: File;
   translationMode?: TranslationMode;
+  bgmTrackUrl?: string;
+  bgmFileName?: string;
 }
 
 export type SourceLanguage = 'auto' | 'en' | 'zh' | 'ko' | 'th';

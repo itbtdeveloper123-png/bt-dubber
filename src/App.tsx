@@ -1,20 +1,34 @@
 import React, { useState, useEffect } from 'react';
 import { RecapStudio } from './components/RecapStudio';
 import { SavedRecapsModal } from './components/SavedRecapsModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
+import { TikTokImporterModal, TikTokEpisode, TikTokChannelInfo } from './components/TikTokImporterModal';
 import { GenerationParams, MovieRecapResult, TranslationMode } from './types';
 import { DEFAULT_DEMO_RECAP } from './data/sampleTranscripts';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { processAndExtractAudio } from './utils/mediaExtractor';
 import { convertVideoToH264MP4, isLikelyUnsupportedVideo } from './utils/videoTranscoder';
+import { extractBgmInstrumentalTrack } from './utils/vocalRemover';
 
 export default function App() {
   const [currentRecap, setCurrentRecap] = useState<MovieRecapResult | null>(DEFAULT_DEMO_RECAP);
-  const [translationMode, setTranslationMode] = useState<TranslationMode>('movie_recap');
+  const [translationMode, setTranslationMode] = useState<TranslationMode>('word_by_word_lip_sync');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isProcessingFile, setIsProcessingFile] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [savedRecaps, setSavedRecaps] = useState<MovieRecapResult[]>([]);
   const [isSavedModalOpen, setIsSavedModalOpen] = useState<boolean>(false);
+  
+  // Custom User Gemini API Key (Stored in LocalStorage)
+  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('gemini_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState<boolean>(false);
+  const [isTikTokModalOpen, setIsTikTokModalOpen] = useState<boolean>(false);
 
   // Load saved recaps from LocalStorage on initial mount
   useEffect(() => {
@@ -27,6 +41,21 @@ export default function App() {
       console.error('Failed to parse saved recaps from localStorage:', e);
     }
   }, []);
+
+  // Save custom API key to LocalStorage
+  const handleSaveApiKey = (newKey: string) => {
+    const trimmed = newKey.trim();
+    setCustomApiKey(trimmed);
+    try {
+      if (trimmed) {
+        localStorage.setItem('gemini_api_key', trimmed);
+      } else {
+        localStorage.removeItem('gemini_api_key');
+      }
+    } catch (e) {
+      console.error('Failed to save API key to localStorage:', e);
+    }
+  };
 
   // Save to LocalStorage helper
   const saveRecapsToStorage = (list: MovieRecapResult[]) => {
@@ -43,10 +72,20 @@ export default function App() {
     setError(null);
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (customApiKey) {
+        headers['x-gemini-api-key'] = customApiKey;
+      }
+
       const response = await fetch('/api/recap/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
+        headers,
+        body: JSON.stringify({
+          ...params,
+          customApiKey: customApiKey || undefined
+        }),
       });
 
       if (!response.ok) {
@@ -61,10 +100,12 @@ export default function App() {
         data.videoFileName = params.mediaFileName;
         data.mediaType = (params.inputMode === 'video' || params.mediaMimeType?.startsWith('video/')) ? 'video' : 'audio';
       }
-      if (currentRecap?.rawFile) {
-        data.rawFile = currentRecap.rawFile;
-      }
-      setCurrentRecap(data);
+      setCurrentRecap((prev) => ({
+        ...data,
+        bgmTrackUrl: prev?.bgmTrackUrl || data.bgmTrackUrl,
+        bgmFileName: prev?.bgmFileName || data.bgmFileName,
+        rawFile: prev?.rawFile || data.rawFile
+      }));
 
     } catch (err: any) {
       console.error('Error in handleGenerateRecap:', err);
@@ -125,6 +166,24 @@ export default function App() {
       });
     }
 
+    // Automatically isolate and extract BGM instrumental track in background (Strip dialogue/vocals)
+    if (file.type.startsWith('video/') || file.type.startsWith('audio/')) {
+      extractBgmInstrumentalTrack(file, (percent, status) => {
+        console.log(`[Auto-BGM Isolation]: ${percent}% - ${status}`);
+      }).then(({ file: bgmFile, blobUrl: bgmUrl }) => {
+        setCurrentRecap((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            bgmTrackUrl: bgmUrl,
+            bgmFileName: bgmFile.name
+          };
+        });
+      }).catch((bgmErr) => {
+        console.warn('Background auto BGM extraction notice:', bgmErr);
+      });
+    }
+
     try {
       // Process and extract audio track in browser for ultra-fast & lightweight Gemini AI translation
       const { base64, mimeType } = await processAndExtractAudio(file);
@@ -153,6 +212,48 @@ export default function App() {
       setIsLoading(false);
       setError(err.message || 'បរាជ័យក្នុងការអាន និងបកប្រែវីដេអូ។ សូមព្យាយាមម្តងទៀត!');
     }
+  };
+
+  // Handle TikTok episode selected from the importer modal
+  const handleTikTokEpisodeInsert = async (episode: TikTokEpisode, channel: TikTokChannelInfo, dramaSeriesTitle?: string) => {
+    const seriesName = dramaSeriesTitle || channel.nickname;
+    const title = `${seriesName} - ភាគ ${episode.episodeNumber}`;
+    const proxyUrl = episode.playUrl && episode.playUrl.startsWith('http')
+      ? episode.playUrl
+      : `/api/proxy-media?url=${encodeURIComponent(episode.videoUrl)}`;
+
+    // Update or create recap with the TikTok episode video
+    setCurrentRecap((prev) => ({
+      ...(prev || DEFAULT_DEMO_RECAP!),
+      movie_title: title,
+      videoUrl: proxyUrl,
+      videoFileName: `${seriesName}_EP_${episode.episodeNumber}.mp4`,
+      mediaType: 'video' as const,
+      episodeNumber: episode.episodeNumber,
+      seriesTitle: seriesName,
+      bgmTrackUrl: undefined, // Reset BGM so AI automatically isolates BGM for this episode
+      bgmFileName: undefined,
+    }));
+
+    // Trigger AI vocal removal + translation after a brief pause so the video state settles
+    setTimeout(async () => {
+      try {
+        await handleGenerateRecap({
+          transcript: `សម្រាយសាច់រឿង ${seriesName} - ភាគ ${episode.episodeNumber}: ${episode.title}`,
+          inputMode: 'text',
+          translationMode: translationMode,
+          sourceLanguage: 'auto',
+          recapStyle: 'dramatic_action',
+          targetDurationMin: 3,
+          episodeNumber: episode.episodeNumber,
+          seriesTitle: seriesName,
+          mediaUrl: proxyUrl,
+          mediaFileName: `${seriesName}_EP_${episode.episodeNumber}.mp4`,
+        });
+      } catch (e) {
+        console.warn('Auto-generate from TikTok episode:', e);
+      }
+    }, 800);
   };
 
   const handleSaveCurrentRecap = () => {
@@ -212,6 +313,9 @@ export default function App() {
           isProcessingFile={isProcessingFile}
           translationMode={translationMode}
           onChangeTranslationMode={setTranslationMode}
+          onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
+          hasCustomApiKey={Boolean(customApiKey)}
+          onOpenTikTokModal={() => setIsTikTokModalOpen(true)}
           onRegenerateAll={async () => {
             if (!currentRecap) return;
 
@@ -281,6 +385,21 @@ export default function App() {
         onSelectRecap={(recap) => setCurrentRecap(recap)}
         onDeleteRecap={handleDeleteSavedRecap}
         onClearAll={handleClearAllSaved}
+      />
+
+      {/* Direct API Key Settings Modal */}
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        apiKey={customApiKey}
+        onSaveApiKey={handleSaveApiKey}
+      />
+
+      {/* TikTok Drama Importer Modal */}
+      <TikTokImporterModal
+        isOpen={isTikTokModalOpen}
+        onClose={() => setIsTikTokModalOpen(false)}
+        onSelectEpisode={handleTikTokEpisodeInsert}
       />
 
     </div>

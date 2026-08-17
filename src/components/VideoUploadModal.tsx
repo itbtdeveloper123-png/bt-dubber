@@ -16,27 +16,27 @@ interface VideoUploadModalProps {
 
 const SAMPLE_VIDEOS = [
   {
-    id: 'sample_cyberpunk',
-    title: 'Cyberpunk Sci-Fi Action (វីដេអូវាយប្រហារ)',
-    genre: 'Sci-Fi / Action',
-    duration: '02:45',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-    thumbnail: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=80',
-  },
-  {
-    id: 'sample_nature',
-    title: 'The Great Wilderness (រឿងរ៉ាវព្រៃខ្មោច)',
-    genre: 'Adventure / Thriller',
-    duration: '03:10',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    id: 'sample_sintel',
+    title: 'Sintel Fantasy Adventure (រឿងផ្សងព្រេង)',
+    genre: 'Fantasy / Adventure',
+    duration: '00:52',
+    url: 'https://media.w3.org/2010/05/sintel/trailer_hd.mp4',
     thumbnail: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=500&auto=format&fit=crop&q=80',
   },
   {
-    id: 'sample_animation',
-    title: 'Big Buck Bunny (រឿងត្លុកកំប្លែង)',
-    genre: 'Animation / Comedy',
-    duration: '01:30',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    id: 'sample_oceans',
+    title: 'Oceans Nature Cinema (រឿងជីវិតបាតសមុទ្រ)',
+    genre: 'Documentary / Nature',
+    duration: '00:46',
+    url: 'https://vjs.zencdn.net/v/oceans.mp4',
+    thumbnail: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=80',
+  },
+  {
+    id: 'sample_flower',
+    title: 'Flower Macro Cinematic (ធម្មជាតិដ៏ស្រស់ស្អាត)',
+    genre: 'Cinema / 4K',
+    duration: '00:06',
+    url: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
     thumbnail: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=500&auto=format&fit=crop&q=80',
   }
 ];

@@ -29,8 +29,8 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
     // Target 16,000 Hz Mono for compact size & high speech recognition accuracy
     const targetSampleRate = 16000;
     const duration = decodedBuffer.duration;
-    // Cap audio duration at max 10 minutes to keep payload super light (~10MB max)
-    const cappedDuration = Math.min(duration, 600);
+    // Cap audio duration at max 4 minutes (240s) for ultra-fast upload and instant translation
+    const cappedDuration = Math.min(duration, 240);
     const targetLength = Math.floor(cappedDuration * targetSampleRate);
 
     const offlineCtx = new OfflineAudioContext(1, targetLength, targetSampleRate);
@@ -60,8 +60,8 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
 
   } catch (err) {
     console.warn('Browser audio extraction failed, falling back to direct slice:', err);
-    // Fallback: Slice first 12MB of raw file if audio decoding fails
-    const slicedBlob = file.slice(0, 12 * 1024 * 1024, file.type);
+    // Fallback: Slice first 6MB of raw file if audio decoding fails
+    const slicedBlob = file.slice(0, 6 * 1024 * 1024, file.type);
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
