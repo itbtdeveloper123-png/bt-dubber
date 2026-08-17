@@ -599,6 +599,7 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
             <video
               ref={videoRef}
               src={videoUrl}
+              crossOrigin="anonymous"
               playsInline
               preload="auto"
               muted={audioIsolationMode === 'mute_all_original'}

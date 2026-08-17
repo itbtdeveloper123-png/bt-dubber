@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { Readable } from "stream";
 import { exec, spawn } from "child_process";
 import { GoogleGenAI, Type } from "@google/genai";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
@@ -286,34 +287,43 @@ app.get("/api/proxy-media", async (req, res) => {
 
     const range = req.headers.range;
     const fetchHeaders: Record<string, string> = {};
+    if (targetUrl.includes("tiktok") || targetUrl.includes("tiktokcdn") || targetUrl.includes("douyin")) {
+      fetchHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+      fetchHeaders["Referer"] = "https://www.tiktok.com/";
+    }
     if (range) {
       fetchHeaders["Range"] = range;
     }
 
     const fetchRes = await fetch(targetUrl, { headers: fetchHeaders });
     if (!fetchRes.ok && fetchRes.status !== 206) {
-      // If fetching fails or remote host rejects, return status
       return res.status(fetchRes.status).send("Failed to fetch remote media");
     }
 
     const contentType = fetchRes.headers.get("content-type") || "video/mp4";
     const contentLength = fetchRes.headers.get("content-length");
     const contentRange = fetchRes.headers.get("content-range");
-    const arrayBuf = await fetchRes.arrayBuffer();
-    const buffer = Buffer.from(arrayBuf);
 
-    const headers: Record<string, string> = {
+    res.status(fetchRes.status === 206 ? 206 : 200);
+    res.set({
       "Content-Type": contentType,
       "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
       "Cross-Origin-Resource-Policy": "cross-origin",
       "Accept-Ranges": "bytes",
-    };
+    });
 
-    if (contentLength) headers["Content-Length"] = contentLength;
-    if (contentRange) headers["Content-Range"] = contentRange;
+    if (contentLength) res.set("Content-Length", contentLength);
+    if (contentRange) res.set("Content-Range", contentRange);
 
-    res.writeHead(fetchRes.status === 206 ? 206 : 200, headers);
-    res.end(buffer);
+    if (fetchRes.body) {
+      // @ts-ignore
+      const nodeStream = Readable.fromWeb(fetchRes.body);
+      nodeStream.pipe(res);
+    } else {
+      res.end();
+    }
   } catch (err: any) {
     console.error("Proxy media error:", err);
     res.status(500).send("Proxy error: " + err.message);

@@ -16,9 +16,10 @@ def load_audio_any_format(file_path, target_sr=44100):
         frames = []
         for packet in container.demux(audio_stream):
             for frame in packet.decode():
-                r_frame = resampler.resample(frame)
-                if r_frame is not None:
-                    frames.append(r_frame.to_ndarray())
+                r_frames = resampler.resample(frame)
+                if r_frames:
+                    for rf in r_frames:
+                        frames.append(rf.to_ndarray())
                     
         if not frames:
             raise ValueError("Could not decode audio frames")
