@@ -1,0 +1,108 @@
+/* Injected Floating Download Overlay on TikTok Video Players */
+
+.bt-tiktok-downloader-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Battambang", "Siemreap", sans-serif;
+  opacity: 0.85;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.bt-tiktok-downloader-overlay:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.bt-downloader-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 4px 6px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.bt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 14px;
+  border: none;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.bt-btn:active {
+  transform: scale(0.95);
+}
+
+.bt-btn-hd {
+  background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+  color: #051429;
+  box-shadow: 0 2px 8px rgba(0, 242, 254, 0.35);
+}
+
+.bt-btn-hd:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(0, 242, 254, 0.55);
+}
+
+.bt-btn-audio {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.bt-btn-audio:hover {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fe2c55;
+  border-color: #fe2c55;
+}
+
+.bt-btn-dubber {
+  background: linear-gradient(135deg, #8a2387, #e94057, #f27121);
+  color: #ffffff;
+}
+
+.bt-btn-dubber:hover {
+  filter: brightness(1.15);
+}
+
+.bt-downloader-status {
+  background: rgba(10, 15, 30, 0.95);
+  border: 1px solid rgba(0, 242, 254, 0.4);
+  color: #00f2fe;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 4px 10px;
+  border-radius: 8px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+  animation: btFadeIn 0.2s ease-out;
+}
+
+@keyframes btFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -5,7 +5,7 @@ export const DEFAULT_DEMO_RECAP: MovieRecapResult = {
   total_recap_duration_est: "00:45",
   genre_tag: "Action / Cyber Crime",
   created_at: new Date().toISOString(),
-  videoUrl: "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
+  videoUrl: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
   videoFileName: "Cyber_Vault_Trailer_1080p.mp4",
   mediaType: "video",
   recap_segments: [

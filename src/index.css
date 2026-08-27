@@ -8,6 +8,21 @@
   .font-khmer {
     font-family: 'Kantumruy Pro', 'Plus Jakarta Sans', sans-serif;
   }
+  .font-kantumruy {
+    font-family: 'Kantumruy Pro', sans-serif;
+  }
+  .font-battambang {
+    font-family: 'Battambang', 'Kantumruy Pro', sans-serif;
+  }
+  .font-moul {
+    font-family: 'Moul', 'Kantumruy Pro', cursive, sans-serif;
+  }
+  .font-siemreap {
+    font-family: 'Siemreap', 'Kantumruy Pro', sans-serif;
+  }
+  .font-noto-khmer {
+    font-family: 'Noto Sans Khmer', 'Kantumruy Pro', sans-serif;
+  }
 }
 
 body {
@@ -18,14 +33,41 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom scrollbars for High Density theme */
+/* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #E5E7EB;
+  background: #1e293b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #475569;
 }
 
 @keyframes slideInRight {
@@ -36,6 +78,17 @@ body {
   to {
     opacity: 1;
     transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes slideRight {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 
@@ -54,8 +107,23 @@ body {
   animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+.animate-slideRight {
+  animation: slideRight 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 .animate-fadeIn {
   animation: fadeIn 0.2s ease-out forwards;
 }
 
+@keyframes bounceSubtle {
+  0%, 100% {
+    transform: scale(1.12) translateY(0);
+  }
+  50% {
+    transform: scale(1.18) translateY(-2px);
+  }
+}
 
+.animate-bounce-subtle {
+  animation: bounceSubtle 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) infinite alternate;
+}

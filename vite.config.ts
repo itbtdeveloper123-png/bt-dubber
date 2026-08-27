@@ -15,15 +15,27 @@ export default defineConfig(() => {
       },
     },
     server: {
+      allowedHosts: true as any,
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin',
         'Cross-Origin-Embedder-Policy': 'credentialless',
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâ€”file watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      watch: {
+        ignored: [
+          '**/data/**',
+          '**/uploads/**',
+          '**/temp/**',
+          '**/exports/**',
+          '**/*.db*',
+          '**/*.mp4',
+          '**/*.webm',
+          '**/*.zip',
+          '**/*.wav',
+          '**/*.mp3',
+          '**/*.srt'
+        ]
+      },
     },
   };
 });

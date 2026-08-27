@@ -19,6 +19,7 @@ import {
   Link as LinkIcon,
   Code
 } from 'lucide-react';
+import { getSafeMediaUrl } from '../utils/mediaUtils';
 
 export interface TikTokEpisode {
   id: string;
@@ -792,7 +793,7 @@ if(uniqueIds.length > 0) {
             {/* Video Player Box: Real HTML5 Video Player */}
             <div className="relative w-full aspect-[9/13] max-h-[55vh] bg-black flex items-center justify-center overflow-hidden">
               <video
-                src={previewingEpisode.playUrl || (previewingEpisode.videoUrl.endsWith('.mp4') ? previewingEpisode.videoUrl : undefined)}
+                src={getSafeMediaUrl(previewingEpisode.playUrl || (previewingEpisode.videoUrl.endsWith('.mp4') ? previewingEpisode.videoUrl : undefined))}
                 poster={previewingEpisode.cover || currentSeries?.cover}
                 controls
                 autoPlay

@@ -6,7 +6,15 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
       reader.onload = (e) => {
         const result = e.target?.result as string;
         if (result) {
-          const mimeType = file.type || (file.name.endsWith('.mp3') ? 'audio/mp3' : 'video/mp4');
+          const cleanType = (file.type || '').split(';')[0].trim().toLowerCase();
+          let mimeType = 'video/mp4';
+          if (cleanType === 'audio/wav' || cleanType === 'audio/x-wav' || file.name.endsWith('.wav')) {
+            mimeType = 'audio/wav';
+          } else if (cleanType.startsWith('audio/') || file.name.endsWith('.mp3')) {
+            mimeType = 'audio/mp3';
+          } else if (cleanType === 'video/webm' || file.name.endsWith('.webm')) {
+            mimeType = 'video/webm';
+          }
           resolve({ base64: result, mimeType });
         } else {
           reject(new Error('Failed to read file as Data URL'));

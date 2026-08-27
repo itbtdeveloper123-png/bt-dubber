@@ -1,38 +1,128 @@
 {
-  "name": "react-example",
+  "name": "bt-dubber-studio",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "AI Video Dubbing & Khmer Movie Recap Desktop Studio",
+  "author": "BT Developer",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "node ./node_modules/tsx/dist/cli.mjs server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "dev": "node --max-old-space-size=4096 ./node_modules/tsx/dist/cli.mjs server.ts",
+    "build": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "start": "node --max-old-space-size=4096 dist/server.cjs",
+    "clean": "rm -rf dist server.js dist_electron",
+    "lint": "tsc --noEmit",
+    "electron:dev": "concurrently -k \"npm run dev\" \"wait-on -t 30000 http://localhost:3000 && electron .\"",
+    "electron:build": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win nsis --x64",
+    "electron:build:portable": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win portable --x64",
+    "electron:build:all": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win --x64"
   },
   "dependencies": {
-    "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2",
     "@google/genai": "^2.4.0",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.9",
     "express": "^4.21.2",
-    "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
-    "msedge-tts": "^2.0.7",
-    "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "msedge-tts": "^2.0.7"
   },
   "devDependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "@tailwindcss/vite": "^4.1.14",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.25.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.btdubber.studio",
+    "productName": "BT-Dubber Studio",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "itbtdeveloper123-png",
+        "repo": "bt-dubber"
+      }
+    ],
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "dist/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "data",
+        "to": "data",
+        "filter": [
+          "**/*",
+          "!temp/**",
+          "!temp_bgm/**",
+          "!uploads/**",
+          "!exports/**",
+          "!*.wav",
+          "!*.mp3"
+        ]
+      },
+      {
+        "from": ".",
+        "to": ".",
+        "filter": [
+          "*.py",
+          "cookies.txt",
+          "tiktok_cookies.txt",
+          ".env.example"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "electron/resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BT-Dubber Studio",
+      "installerIcon": "electron/resources/icon.ico",
+      "uninstallerIcon": "electron/resources/icon.ico",
+      "uninstallDisplayName": "BT-Dubber Studio"
+    },
+    "portable": {
+      "artifactName": "BT-Dubber-Portable-${version}.exe"
+    }
   }
 }

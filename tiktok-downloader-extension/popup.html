@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok Video Downloader HD</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    
+    <!-- 1. Header -->
+    <header class="app-header">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="white">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="app-title">TikTok Downloader HD</h1>
+          <p class="app-subtitle">No Watermark & MP3 by BT Dubber</p>
+        </div>
+      </div>
+      <span class="badge-v3" id="sourceBadge">Manifest V3</span>
+    </header>
+
+    <!-- 2. Detected Current Tab Video Card -->
+    <section class="card current-video-card" id="currentVideoSection">
+      <div class="card-header">
+        <span class="pulse-dot" id="activePulse"></span>
+        <h2 id="cardHeaderTitle">វីដេអូនៅលើ Tab បច្ចុប្បន្ន</h2>
+      </div>
+
+      <div class="video-preview-wrapper" id="videoPreviewArea">
+        <div class="preview-thumb-box">
+          <img id="videoThumb" src="icons/icon128.png" alt="Thumbnail" class="preview-img" onerror="this.onerror=null;this.src='icons/icon128.png';">
+          <span id="videoDuration" class="duration-badge">00:00</span>
+        </div>
+        <div class="preview-info">
+          <h3 id="videoTitle" class="video-title">កំពុងស្វែងរកវីដេអូ...</h3>
+          <p id="videoAuthor" class="video-author">@creator</p>
+          <div class="video-stats">
+            <span id="statLikes">❤️ 0</span>
+            <span id="statComments">💬 0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="action-grid" id="actionButtons">
+        <button id="btnDownloadHd" class="btn btn-primary" disabled>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+          <span>Download HD (No Watermark)</span>
+        </button>
+
+        <div class="btn-row">
+          <button id="btnDownloadAudio" class="btn btn-secondary" disabled>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+            <span>Audio (MP3)</span>
+          </button>
+          <button id="btnSendDubber" class="btn btn-gradient" disabled>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+            <span>BT Dubber</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Manual Paste Link Section -->
+    <section class="card manual-card">
+      <div class="card-header">
+        <h2>Paste Link ដើម្បី Download</h2>
+      </div>
+      <div class="input-group">
+        <input type="text" id="inputUrl" placeholder="https://www.tiktok.com/@user/video/..." autocomplete="off">
+        <button id="btnFetchManual" class="btn-fetch">Fetch</button>
+      </div>
+    </section>
+
+    <!-- 4. Status / Toast Box -->
+    <div id="statusBox" class="status-box" style="display: none;"></div>
+
+    <!-- 5. Footer -->
+    <footer class="app-footer">
+      <a href="http://localhost:3000" target="_blank" class="footer-link">🎬 បើក BT Dubber Studio (Localhost)</a>
+    </footer>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

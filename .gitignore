@@ -1,6 +1,7 @@
 node_modules/
 build/
 dist/
+dist_electron/
 coverage/
 .DS_Store
 *.log
@@ -11,4 +12,19 @@ __pycache__/
 cookies.txt
 tiktok_cookies.txt
 temp_vocal/
+scratch/
+test_clone_payload.json
+
+# Local data & media caches
+data/dubber.db*
+data/uploads/
+data/exports/
+data/temp/
+data/temp_bgm/
+data/cloned_voices/
+data/*.wav
+data/*.mp3
+data/*.mp4
+data/*.webm
+
 
