@@ -1,8 +1,9 @@
 const { contextBridge, ipcRenderer, shell } = require('electron');
+const pkg = require('../package.json');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
-  version: '1.0.0',
+  version: pkg.version || '1.1.1',
   isElectron: true,
   openExternal: (url) => shell.openExternal(url),
   showItemInFolder: (fullPath) => ipcRenderer.invoke('show-item-in-folder', fullPath),

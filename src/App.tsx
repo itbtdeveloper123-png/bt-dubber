@@ -87,6 +87,18 @@ export default function App() {
     } catch {}
   };
 
+  // Auto-listen for update notifications from Electron main process
+  useEffect(() => {
+    if (!window.electronAPI?.onUpdateAvailable) return;
+    const unsub = window.electronAPI.onUpdateAvailable((info) => {
+      console.log('[AutoUpdater] Update detected in App, opening modal:', info);
+      setIsUpdateModalOpen(true);
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
   const fetchSavedRecaps = async () => {
     try {
       const res = await fetch('/api/db/recaps');

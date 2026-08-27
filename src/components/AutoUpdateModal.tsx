@@ -91,6 +91,8 @@ export const AutoUpdateModal: React.FC<AutoUpdateModalProps> = ({ isOpen, onClos
     }
   };
 
+  const currentVersion = window.electronAPI?.version ? `v${window.electronAPI.version}` : 'v1.1.1';
+
   if (!isOpen) return null;
 
   return (
@@ -108,7 +110,7 @@ export const AutoUpdateModal: React.FC<AutoUpdateModalProps> = ({ isOpen, onClos
                 BT-Dubber Studio Version Control
               </h3>
               <p className="text-xs text-slate-400">
-                កំណែបច្ចុប្បន្ន (Current Version): <span className="text-indigo-400 font-semibold">v1.0.0</span>
+                កំណែបច្ចុប្បន្ន (Current Version): <span className="text-indigo-400 font-semibold">{currentVersion}</span>
               </p>
             </div>
           </div>
@@ -160,7 +162,7 @@ export const AutoUpdateModal: React.FC<AutoUpdateModalProps> = ({ isOpen, onClos
               <div>
                 <h4 className="text-base font-semibold text-emerald-400">អ្នកកំពុងប្រើប្រាស់ Version ចុងក្រោយបំផុត!</h4>
                 <p className="text-xs text-slate-400 mt-1">
-                  BT-Dubber Studio v1.0.0 គឺជាកំណែចុងក្រោយបំផុតហើយ គ្មាន Update ថ្មីទេ។
+                  BT-Dubber Studio {currentVersion} គឺជាកំណែចុងក្រោយបំផុតហើយ គ្មាន Update ថ្មីទេ។
                 </p>
               </div>
               <button
