@@ -182,13 +182,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     return availableFolders.find(f => f.folderName === selectedFolderName) || availableFolders[0] || null;
   }, [availableFolders, selectedFolderName]);
 
-  if (!isOpen) return null;
-
   const currentRecap = recapData || activeFolderData?.episodes[0] || null;
   const cleanFileName = (currentRecap?.movie_title || selectedFolderName || 'BT_Dubber_Project')
     .replace(/[^\w\s\u1780-\u17FF-]/g, '')
     .trim()
     .replace(/\s+/g, '_');
+
   // Karaoke Word highlight cycling animation in Preview
   useEffect(() => {
     if (!showLivePreview || !previewPlaying) return;
@@ -591,32 +590,34 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   };
 
   const handleExportSrt = () => {
-    const srt = generateSrtContent(recapData.recap_segments || []);
+    const srt = generateSrtContent(currentRecap?.recap_segments || []);
     downloadSubtitleFile(srt, `${cleanFileName}.srt`, 'text/plain;charset=utf-8');
     setCopiedFormat('srt');
     setTimeout(() => setCopiedFormat(null), 2000);
   };
 
   const handleExportVtt = () => {
-    const vtt = generateVttContent(recapData.recap_segments || [], recapData.movie_title);
+    const vtt = generateVttContent(currentRecap?.recap_segments || [], currentRecap?.movie_title);
     downloadSubtitleFile(vtt, `${cleanFileName}.vtt`, 'text/vtt;charset=utf-8');
     setCopiedFormat('vtt');
     setTimeout(() => setCopiedFormat(null), 2000);
   };
 
   const handleExportAss = () => {
-    const ass = generateAssContent(recapData.recap_segments || [], subtitleStyle, recapData.movie_title);
+    const ass = generateAssContent(currentRecap?.recap_segments || [], subtitleStyle, currentRecap?.movie_title);
     downloadSubtitleFile(ass, `${cleanFileName}.ass`, 'text/plain;charset=utf-8');
     setCopiedFormat('ass');
     setTimeout(() => setCopiedFormat(null), 2000);
   };
 
   const handleExportFcpxml = () => {
-    const fcpxml = generateFcpxmlContent(recapData);
+    const fcpxml = generateFcpxmlContent(currentRecap);
     downloadSubtitleFile(fcpxml, `${cleanFileName}.fcpxml`, 'application/xml;charset=utf-8');
     setCopiedFormat('fcpxml');
     setTimeout(() => setCopiedFormat(null), 2000);
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 select-none animate-fadeIn font-sans">
@@ -1846,7 +1847,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </p>
 
               <div className="space-y-2">
-                {recapData.bgmTrackUrl ? (
+                {currentRecap?.bgmTrackUrl ? (
                   <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-2xl flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
@@ -1858,7 +1859,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       </div>
                     </div>
                     <a
-                      href={recapData.bgmTrackUrl}
+                      href={currentRecap.bgmTrackUrl}
                       download={`${cleanFileName}_bgm.mp3`}
                       className="py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-khmer font-bold flex items-center gap-1 transition cursor-pointer"
                     >
