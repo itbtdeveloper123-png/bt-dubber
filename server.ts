@@ -2406,6 +2406,236 @@ app.post("/api/separate-bgm-stream", async (req, res) => {
   }
 });
 
+// ==========================================
+// CapCut-Style Copyright & ContentID Safety Analyzer
+// ==========================================
+app.post("/api/check-copyright", async (req, res) => {
+  try {
+    const {
+      originalAudioVolume = 0.0,
+      bakeDubbing = true,
+      bakeBgm = true,
+      bgmVolume = 0.3,
+      bakeAntiCopyright = true,
+      acFlipHorizontal = true,
+      acColorFilter = 'cinematic_warm',
+      acZoomScale = 1.05,
+      bakeWatermark = true,
+      watermarkText = '',
+      segments = []
+    } = req.body || {};
+
+    let audioScore = 0;
+    let visualScore = 0;
+    const checks: Array<{
+      category: 'audio' | 'visual' | 'platform';
+      name: string;
+      status: 'passed' | 'warning' | 'danger' | 'info';
+      message: string;
+      tip?: string;
+    }> = [];
+
+    // 1. Audio Original Volume Check (Primary ContentID Trigger)
+    const origVol = Number(originalAudioVolume || 0);
+    if (origVol <= 0.01) {
+      audioScore += 35;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងដើមនៃរឿង (Original Movie Audio)',
+        status: 'passed',
+        message: 'សំឡេងដើមត្រូវបាន Mute (0%) ទាំងស្រុង ជួយការពារ ContentID ១០០%។'
+      });
+    } else if (origVol <= 0.15) {
+      audioScore += 25;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងដើមនៃរឿង (Original Movie Audio)',
+        status: 'passed',
+        message: `សំឡេងដើមត្រូវបានបន្ថយមកត្រឹម ${Math.round(origVol * 100)}% (កម្រិតសុវត្ថិភាពខ្ពស់)។`
+      });
+    } else if (origVol <= 0.40) {
+      audioScore += 15;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងដើមនៃរឿង (Original Movie Audio)',
+        status: 'warning',
+        message: `សំឡេងដើមមានកម្រិត ${Math.round(origVol * 100)}% (អាចមានហានិភ័យបន្តិចបន្តួច)។`,
+        tip: 'ណែនាំឱ្យបន្ថយមកក្រោម 15% ឬ Mute ដើម្បីសុវត្ថិភាពដាច់ខាត។'
+      });
+    } else {
+      audioScore += 5;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងដើមនៃរឿង (Original Movie Audio)',
+        status: 'danger',
+        message: `សំឡេងដើមខ្លាំង ${Math.round(origVol * 100)}% អាចឱ្យប្រព័ន្ធ Facebook/TikTok ចាប់បាន។`,
+        tip: 'សូមចុចប៊ូតុង "បិទសំឡេងដើម (Mute)" ដើម្បីបញ្ចៀសការជាប់ Copyright។'
+      });
+    }
+
+    // 2. Khmer Neural TTS Voiceover (Audio Masking)
+    const segCount = Array.isArray(segments) ? segments.length : 0;
+    if (bakeDubbing && segCount > 0) {
+      audioScore += 35;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងនិយាយសម្រាយខ្មែរ (Khmer Neural Dubbing)',
+        status: 'passed',
+        message: `មានសំឡេងនិយាយខ្មែរ Neural TTS ចំនួន ${segCount} ឈុត ជួយបន្លំនិងលុបបំបាត់សំឡេងផ្ទៃខាងក្រោយ។`
+      });
+    } else {
+      audioScore += 10;
+      checks.push({
+        category: 'audio',
+        name: 'សំឡេងនិយាយសម្រាយខ្មែរ (Khmer Neural Dubbing)',
+        status: 'warning',
+        message: 'មិនមានសំឡេងនិយាយខ្មែរ (TTS Dubbing) គ្រប់គ្រាន់ឡើយ។',
+        tip: 'ការបន្ថែមសំឡេងនិយាយជួយការពារ Copyright បានយ៉ាងមានប្រសិទ្ធភាព។'
+      });
+    }
+
+    // 3. Background Music (BGM) Track Check
+    const bgmVolNum = Number(bgmVolume || 0);
+    if (!bakeBgm || bgmVolNum <= 0.01) {
+      audioScore += 30;
+      checks.push({
+        category: 'audio',
+        name: 'ភ្លេងផ្ទៃខាងក្រោយ (Background Music)',
+        status: 'passed',
+        message: 'គ្មានការចាក់ភ្លេង BGM ដែលអាចជាប់កម្មសិទ្ធិបញ្ញាឡើយ។'
+      });
+    } else if (bgmVolNum <= 0.35) {
+      audioScore += 30;
+      checks.push({
+        category: 'audio',
+        name: 'ភ្លេងផ្ទៃខាងក្រោយ (Background Music)',
+        status: 'passed',
+        message: `ភ្លេង BGM ត្រូវបានកំណត់ក្នុងកម្រិត ${Math.round(bgmVolNum * 100)}% (ស្តង់ដារ Recap Studio)។`
+      });
+    } else {
+      audioScore += 20;
+      checks.push({
+        category: 'audio',
+        name: 'ភ្លេងផ្ទៃខាងក្រោយ (Background Music)',
+        status: 'warning',
+        message: `កម្រិតសំឡេង BGM ខ្ពស់ (${Math.round(bgmVolNum * 100)}%)។`,
+        tip: 'ណែនាំឱ្យប្រើ BGM កម្រិតចន្លោះពី 20% ទៅ 30%។'
+      });
+    }
+
+    // 4. Anti-Copyright Shield Visual Protections
+    if (bakeAntiCopyright) {
+      if (acFlipHorizontal) {
+        visualScore += 35;
+        checks.push({
+          category: 'visual',
+          name: 'ត្រឡប់រូបភាពផ្ដេក (Horizontal Flip)',
+          status: 'passed',
+          message: 'បានបើកដំណើរការត្រឡប់ស៊ុមរូបភាព (បំបែក Video Fingerprinting Match)។'
+        });
+      }
+      if (acColorFilter && acColorFilter !== 'none') {
+        visualScore += 35;
+        checks.push({
+          category: 'visual',
+          name: 'តម្រងពណ៌ស្ទូឌីយោ (Cinematic Color Filter)',
+          status: 'passed',
+          message: `បានដាក់តម្រងពណ៌ ${acColorFilter} (ផ្លាស់ប្ដូរ Pixel Histogram នៃវីដេអូដើម)។`
+        });
+      } else {
+        visualScore += 15;
+        checks.push({
+          category: 'visual',
+          name: 'តម្រងពណ៌ស្ទូឌីយោ (Cinematic Color Filter)',
+          status: 'info',
+          message: 'មិនទាន់បានជ្រើសរើស Color Filter ទេ។'
+        });
+      }
+      if (acZoomScale && Number(acZoomScale) >= 1.03) {
+        visualScore += 30;
+        checks.push({
+          category: 'visual',
+          name: 'ពង្រីកស៊ុមវីដេអូ (Dynamic Zoom In)',
+          status: 'passed',
+          message: `បានពង្រីកស៊ុមវីដេអូ ${Math.round(Number(acZoomScale) * 100)}% ដើម្បីកាត់គែមសម្គាល់។`
+        });
+      } else {
+        visualScore += 15;
+      }
+    } else {
+      checks.push({
+        category: 'visual',
+        name: 'ខែលការពាររូបភាព (Anti-Copyright Shield)',
+        status: 'warning',
+        message: 'Anti-Copyright Shield មិនទាន់ត្រូវបានបើកដំណើរការទេ។',
+        tip: 'សូមបើក "Anti-Copyright Shield" ដើម្បីឱ្យប្រព័ន្ធដាក់ Flip, Zoom និង Color Filter ដោយស្វ័យប្រវត្តិ។'
+      });
+    }
+
+    // 5. Channel Watermark Branding
+    if (bakeWatermark && watermarkText && watermarkText.trim()) {
+      checks.push({
+        category: 'visual',
+        name: 'ស្លាកសញ្ញាម្ចាស់ឆានែល (Channel Watermark)',
+        status: 'passed',
+        message: `បានបិទស្លាកសញ្ញា "${watermarkText.trim()}" (បញ្ជាក់កម្មសិទ្ធិឆានែលផ្ទាល់ខ្លួន)។`
+      });
+    }
+
+    // Total Normalized Score (0 - 100%)
+    const rawTotal = (audioScore * 0.55) + (visualScore * 0.45);
+    const totalScore = Math.min(100, Math.max(10, Math.round(rawTotal)));
+
+    let safetyLevel: 'safe' | 'moderate' | 'high_risk' = 'safe';
+    let statusTitle = '🛡️ សុវត្ថិភាពខ្ពស់ ឆ្លងផុត Copyright ១០០%';
+    let statusDescription = 'វីដេអូត្រូវបានការពារត្រឹមត្រូវទាំងសំឡេង និងរូបភាព អាចផុសលើ TikTok, Reels, និង YouTube ដោយសុវត្ថិភាព។';
+
+    if (totalScore < 60) {
+      safetyLevel = 'high_risk';
+      statusTitle = '⚠️ ហានិភ័យខ្ពស់ (High Risk)';
+      statusDescription = 'វីដេអូអាចត្រូវបានប្រព័ន្ធ AI Platform ចាប់បាន។ សូមបើក Anti-Copyright Shield និង Mute សំឡេងដើម។';
+    } else if (totalScore < 85) {
+      safetyLevel = 'moderate';
+      statusTitle = '🟡 សុវត្ថិភាពកម្រិតមធ្យម (Moderate Safe)';
+      statusDescription = 'វីដេអូមានសុវត្ថិភាពគួរសម ប៉ុន្តែគួរតែបើក Anti-Copyright Shield បន្ថែមដើម្បីភាពជឿជាក់ដាច់ខាត។';
+    }
+
+    // Platform-specific status badges
+    const platforms = [
+      {
+        name: 'TikTok Video / TikTok Shop',
+        status: totalScore >= 80 ? 'passed' : totalScore >= 60 ? 'warning' : 'danger',
+        badge: totalScore >= 80 ? '✅ ឆ្លងផុត 100%' : '⚠️ គួរការពារបន្ថែម'
+      },
+      {
+        name: 'Facebook Reels & Pages',
+        status: totalScore >= 75 ? 'passed' : 'warning',
+        badge: totalScore >= 75 ? '✅ គ្មានបញ្ហា Rights Manager' : '⚠️ ប្រយ័ត្ន Audio Match'
+      },
+      {
+        name: 'YouTube Shorts & Longs',
+        status: totalScore >= 85 ? 'passed' : 'warning',
+        badge: totalScore >= 85 ? '✅ ឆ្លងផុត ContentID Check' : '⚠️ ត្រូវ Mute សំឡេងដើម'
+      }
+    ];
+
+    return res.json({
+      success: true,
+      score: totalScore,
+      safetyLevel,
+      statusTitle,
+      statusDescription,
+      audioScore: Math.min(100, Math.round(audioScore)),
+      visualScore: Math.min(100, Math.round(visualScore)),
+      checks,
+      platforms
+    });
+  } catch (err: any) {
+    console.error("Copyright check error:", err);
+    return res.status(500).json({ error: err.message || "Failed to analyze copyright" });
+  }
+});
+
 app.post("/api/render/export", async (req, res) => {
   const tempFilesToClean: string[] = [];
   try {

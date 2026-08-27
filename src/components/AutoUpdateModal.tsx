@@ -91,7 +91,7 @@ export const AutoUpdateModal: React.FC<AutoUpdateModalProps> = ({ isOpen, onClos
     }
   };
 
-  const currentVersion = window.electronAPI?.version ? `v${window.electronAPI.version}` : 'v1.1.1';
+  const currentVersion = (typeof window !== 'undefined' && window.electronAPI?.version) ? `v${window.electronAPI.version}` : 'v1.2.2';
 
   if (!isOpen) return null;
 

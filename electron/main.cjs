@@ -9,6 +9,11 @@ const PORT = process.env.PORT || 3000;
 let mainWindow = null;
 let serverProcess = null;
 
+// Set Application User Model ID for Windows taskbar icon grouping
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.btdubber.studio');
+}
+
 // Enforce single instance lock
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {

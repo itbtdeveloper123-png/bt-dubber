@@ -382,7 +382,9 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
           title="Version Control & Auto-Update"
         >
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[11px] font-bold text-slate-800">v1.0.0</span>
+          <span className="text-[11px] font-bold text-slate-800">
+            {typeof window !== 'undefined' && window.electronAPI?.version ? `v${window.electronAPI.version}` : 'v1.2.2'}
+          </span>
         </button>
 
         {/* More Actions Dropdown (...) */}
