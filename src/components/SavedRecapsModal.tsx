@@ -129,10 +129,16 @@ export const SavedRecapsModal: React.FC<SavedRecapsModalProps> = ({
   const groupedData = useMemo(() => {
     // Collect all unique folders (both from database folders list and inferred from recaps)
     const folderMap = new Map<string, { folder: RecapFolder; items: MovieRecapResult[] }>();
+    const seenLowerNames = new Map<string, string>(); // lowerName -> folderId
 
-    // 1. Initialize registered DB folders
+    // 1. Initialize registered DB folders without duplicate names
     folders.forEach((f) => {
-      folderMap.set(f.id, { folder: f, items: [] });
+      const lower = (f.name || '').trim().toLowerCase();
+      if (!lower) return;
+      if (!seenLowerNames.has(lower)) {
+        seenLowerNames.set(lower, f.id);
+        folderMap.set(f.id, { folder: f, items: [] });
+      }
     });
 
     // 2. Also register any seriesTitle/folderName found on recaps if not in DB folders
@@ -140,25 +146,26 @@ export const SavedRecapsModal: React.FC<SavedRecapsModalProps> = ({
 
     filteredRecaps.forEach((recap) => {
       const targetFolderId = recap.folderId;
-      const targetFolderName = recap.folderName || recap.seriesTitle;
+      const targetFolderName = (recap.folderName || recap.seriesTitle || '').trim();
+      const lowerFolderName = targetFolderName.toLowerCase();
 
       if (targetFolderId && folderMap.has(targetFolderId)) {
         folderMap.get(targetFolderId)!.items.push(recap);
-      } else if (targetFolderName) {
-        // Find existing folder with same name
-        let found = Array.from(folderMap.values()).find(
-          (entry) => entry.folder.name.toLowerCase() === targetFolderName.toLowerCase()
-        );
-        if (!found) {
-          const tempFolder: RecapFolder = {
-            id: `auto_${targetFolderName}`,
-            name: targetFolderName,
-            color: '#6366F1'
-          };
-          folderMap.set(tempFolder.id, { folder: tempFolder, items: [recap] });
+      } else if (lowerFolderName && seenLowerNames.has(lowerFolderName)) {
+        const canonicalId = seenLowerNames.get(lowerFolderName)!;
+        if (folderMap.has(canonicalId)) {
+          folderMap.get(canonicalId)!.items.push(recap);
         } else {
-          found.items.push(recap);
+          uncategorizedItems.push(recap);
         }
+      } else if (targetFolderName) {
+        const tempFolder: RecapFolder = {
+          id: `auto_${targetFolderName}`,
+          name: targetFolderName,
+          color: '#6366F1'
+        };
+        seenLowerNames.set(lowerFolderName, tempFolder.id);
+        folderMap.set(tempFolder.id, { folder: tempFolder, items: [recap] });
       } else {
         uncategorizedItems.push(recap);
       }

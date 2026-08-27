@@ -1,7 +1,7 @@
 {
   "name": "bt-dubber-studio",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.1",
   "description": "AI Video Dubbing & Khmer Movie Recap Desktop Studio",
   "author": "BT Developer",
   "main": "electron/main.cjs",
@@ -13,9 +13,9 @@
     "clean": "rm -rf dist server.js dist_electron",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently -k \"npm run dev\" \"wait-on -t 30000 http://localhost:3000 && electron .\"",
-    "electron:build": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win nsis --x64",
-    "electron:build:portable": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win portable --x64",
-    "electron:build:all": "npm run build && cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win --x64"
+    "electron:build": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false TEMP=D:\\temp TMP=D:\\temp ELECTRON_BUILDER_COMPRESSION_LEVEL=7 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win nsis --x64",
+    "electron:build:portable": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false TEMP=D:\\temp TMP=D:\\temp ELECTRON_BUILDER_COMPRESSION_LEVEL=7 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win portable --x64",
+    "electron:build:all": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false TEMP=D:\\temp TMP=D:\\temp ELECTRON_BUILDER_COMPRESSION_LEVEL=7 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --win --x64"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -50,6 +50,7 @@
   "build": {
     "appId": "com.btdubber.studio",
     "productName": "BT-Dubber Studio",
+    "compression": "maximum",
     "publish": [
       {
         "provider": "github",
@@ -65,22 +66,16 @@
       "electron/**/*",
       "package.json"
     ],
+    "asar": true,
     "asarUnpack": [
-      "dist/**/*",
-      "node_modules/**/*"
+      "dist/**/*"
     ],
     "extraResources": [
       {
-        "from": "data",
-        "to": "data",
+        "from": "data/fonts",
+        "to": "data/fonts",
         "filter": [
-          "**/*",
-          "!temp/**",
-          "!temp_bgm/**",
-          "!uploads/**",
-          "!exports/**",
-          "!*.wav",
-          "!*.mp3"
+          "**/*"
         ]
       },
       {
@@ -95,6 +90,7 @@
       }
     ],
     "win": {
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",
@@ -113,7 +109,10 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "packElevateHelper": false,
       "allowToChangeInstallationDirectory": true,
+      "differentialPackage": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "BT-Dubber Studio",

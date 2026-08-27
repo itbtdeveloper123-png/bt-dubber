@@ -12,6 +12,12 @@ if (!fs.existsSync(DATA_DIR)) {
 const DB_PATH = path.join(DATA_DIR, 'dubber.db');
 const db = new DatabaseSync(DB_PATH);
 
+// Enable WAL Mode & High-Performance Caching for lightning-fast concurrent reads/writes
+try { db.exec(`PRAGMA journal_mode = WAL;`); } catch {}
+try { db.exec(`PRAGMA synchronous = NORMAL;`); } catch {}
+try { db.exec(`PRAGMA cache_size = -64000;`); } catch {} // 64MB Cache
+try { db.exec(`PRAGMA temp_store = MEMORY;`); } catch {}
+
 // Initialize Tables
 export function initDatabase() {
   // Table 1: Translated Recaps & Scripts
@@ -117,7 +123,17 @@ export function initDatabase() {
     db.exec(`ALTER TABLE cloned_voices ADD COLUMN sample_text TEXT DEFAULT ''`);
   } catch {}
 
-  console.log(`[SQLite DB] Initialized database at: ${DB_PATH}`);
+  // High-Speed Database Indexes for instantaneous queries and filtering
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_recaps_folder_id ON recaps(folder_id);`); } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_recaps_folder_name ON recaps(folder_name);`); } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_recaps_movie_title ON recaps(movie_title);`); } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_recaps_series_title ON recaps(series_title);`); } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_folders_name ON folders(name);`); } catch {}
+
+  // Auto-clean & merge any legacy duplicate folders on startup
+  deduplicateFoldersInDb();
+
+  console.log(`[SQLite DB] Initialized high-performance WAL database at: ${DB_PATH}`);
 
   // Auto-heal / migrate any legacy ephemeral blob: URLs to permanent /api/media/... files
   try {
@@ -541,36 +557,100 @@ CRITICAL RULES FOR CHARACTER NAME CONSISTENCY (ក្បួនដាច់ខា
   }
 }
 
-// ----------------- Folders CRUD Helpers -----------------
+// ----------------- Folders CRUD & Deduplication Helpers -----------------
+
+export function deduplicateFoldersInDb(): void {
+  try {
+    const all = db.prepare(`SELECT * FROM folders ORDER BY created_at ASC`).all() as any[];
+    const seenNames = new Map<string, string>(); // lowerName -> primaryId
+    const toDeleteIds: string[] = [];
+
+    for (const f of all) {
+      const cleanName = (f.name || '').trim().toLowerCase();
+      if (!cleanName) continue;
+
+      if (!seenNames.has(cleanName)) {
+        seenNames.set(cleanName, f.id);
+      } else {
+        const primaryId = seenNames.get(cleanName)!;
+        toDeleteIds.push(f.id);
+        // Remap any recaps pointing to this duplicate folder to the primary folder
+        try {
+          db.prepare(`UPDATE recaps SET folder_id = ? WHERE folder_id = ?`).run(primaryId, f.id);
+        } catch {}
+      }
+    }
+
+    if (toDeleteIds.length > 0) {
+      const delStmt = db.prepare(`DELETE FROM folders WHERE id = ?`);
+      for (const delId of toDeleteIds) {
+        delStmt.run(delId);
+      }
+      console.log(`🧹 [Database Cleaner] Merged and cleaned up ${toDeleteIds.length} duplicate folders in SQLite!`);
+    }
+  } catch (err) {
+    console.warn('Folder deduplication notice:', err);
+  }
+}
 
 export function getAllFoldersFromDb(): any[] {
   const stmt = db.prepare(`SELECT * FROM folders ORDER BY name ASC`);
-  return stmt.all().map((row: any) => ({
-    id: row.id,
-    name: row.name,
-    color: row.color || '#3B82F6',
-    created_at: row.created_at,
-    updated_at: row.updated_at
-  }));
+  const rows = stmt.all() as any[];
+  const seenNames = new Set<string>();
+  const uniqueFolders: any[] = [];
+
+  for (const row of rows) {
+    const cleanName = (row.name || '').trim();
+    const lower = cleanName.toLowerCase();
+    if (!lower || seenNames.has(lower)) continue;
+    seenNames.add(lower);
+    uniqueFolders.push({
+      id: row.id,
+      name: cleanName,
+      color: row.color || '#3B82F6',
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    });
+  }
+
+  return uniqueFolders;
 }
 
 export function saveFolderToDb(folder: any): any {
-  const id = folder.id || `folder_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const now = new Date().toISOString();
+  const rawName = (folder.name || 'Folder ថ្មី').trim();
+  const lowerName = rawName.toLowerCase();
+
+  // 1. Check if folder already exists by exact ID
+  if (folder.id) {
+    const existingById = db.prepare(`SELECT * FROM folders WHERE id = ?`).get(folder.id) as any;
+    if (existingById) {
+      const stmt = db.prepare(`UPDATE folders SET name = ?, color = ?, updated_at = ? WHERE id = ?`);
+      stmt.run(rawName, folder.color || existingById.color || '#3B82F6', now, folder.id);
+      return { id: folder.id, name: rawName, color: folder.color || existingById.color, created_at: existingById.created_at, updated_at: now };
+    }
+  }
+
+  // 2. Deduplicate: Check if a folder with the same name already exists
+  const existingByName = db.prepare(`SELECT * FROM folders WHERE LOWER(TRIM(name)) = ?`).get(lowerName) as any;
+  if (existingByName) {
+    const stmt = db.prepare(`UPDATE folders SET color = ?, updated_at = ? WHERE id = ?`);
+    stmt.run(folder.color || existingByName.color || '#3B82F6', now, existingByName.id);
+    return { id: existingByName.id, name: existingByName.name, color: folder.color || existingByName.color, created_at: existingByName.created_at, updated_at: now };
+  }
+
+  // 3. Create new unique folder record
+  const id = folder.id || `folder_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const createdAt = folder.created_at || now;
   const updatedAt = now;
 
   const stmt = db.prepare(`
     INSERT INTO folders (id, name, color, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      color = excluded.color,
-      updated_at = excluded.updated_at
   `);
 
-  stmt.run(id, folder.name || 'Folder ថ្មី', folder.color || '#3B82F6', createdAt, updatedAt);
-  return { id, name: folder.name, color: folder.color || '#3B82F6', created_at: createdAt, updated_at: updatedAt };
+  stmt.run(id, rawName, folder.color || '#3B82F6', createdAt, updatedAt);
+  return { id, name: rawName, color: folder.color || '#3B82F6', created_at: createdAt, updated_at: updatedAt };
 }
 
 export function deleteFolderFromDb(id: string): boolean {

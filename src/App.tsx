@@ -71,7 +71,21 @@ export default function App() {
   const [exportTargetFolderName, setExportTargetFolderName] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const [globalVoicePersona, setGlobalVoicePersona] = useState<string>('auto');
-  const [ttsSpeed, setTtsSpeed] = useState<number>(1.25);
+  const [ttsSpeed, setTtsSpeedState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('tts_playback_speed');
+      return saved ? Number(saved) : 1.25;
+    } catch {
+      return 1.25;
+    }
+  });
+
+  const setTtsSpeed = (speed: number) => {
+    setTtsSpeedState(speed);
+    try {
+      localStorage.setItem('tts_playback_speed', String(speed));
+    } catch {}
+  };
 
   const fetchSavedRecaps = async () => {
     try {
@@ -100,8 +114,15 @@ export default function App() {
       const foldersRes = await fetch('/api/db/folders');
       if (foldersRes.ok) {
         const folderList: RecapFolder[] = await foldersRes.json();
-        setFolders(folderList || []);
-        return folderList;
+        const seen = new Set<string>();
+        const unique = (folderList || []).filter(f => {
+          const lower = (f.name || '').trim().toLowerCase();
+          if (!lower || seen.has(lower)) return false;
+          seen.add(lower);
+          return true;
+        });
+        setFolders(unique);
+        return unique;
       }
     } catch (e) {
       console.warn('Could not load folders from SQLite DB:', e);
@@ -652,7 +673,7 @@ export default function App() {
       if (res.ok) {
         const saved: RecapFolder = await res.json();
         setFolders((prev) => {
-          const idx = prev.findIndex(f => f.id === saved.id);
+          const idx = prev.findIndex(f => f.id === saved.id || (f.name && saved.name && f.name.trim().toLowerCase() === saved.name.trim().toLowerCase()));
           if (idx >= 0) {
             const copy = [...prev];
             copy[idx] = saved;
@@ -998,6 +1019,7 @@ export default function App() {
           folders={folders}
           initialFolder={exportTargetFolderName}
           initialScope="folder"
+          initialTtsSpeed={ttsSpeed}
         />
       )}
 

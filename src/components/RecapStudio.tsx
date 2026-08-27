@@ -2028,6 +2028,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
           watermarkCleanerConfig={watermarkCleanerConfig}
           lipSyncConfig={lipSyncConfig}
           subtitleStyle={subtitleConfig}
+          initialTtsSpeed={ttsSpeed}
         />
       )}
 

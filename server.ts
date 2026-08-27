@@ -56,6 +56,37 @@ const EXPORTS_DIR = path.join(DATA_DIR, "exports");
 process.env.TEMP = TEMP_DIR;
 process.env.TMP = TEMP_DIR;
 
+// Purge expired orphaned temporary files on server startup to maintain clean disk space
+function purgeOldTempFiles(): void {
+  try {
+    if (!fs.existsSync(TEMP_DIR)) return;
+    const files = fs.readdirSync(TEMP_DIR);
+    const now = Date.now();
+    const maxAgeMs = 24 * 60 * 60 * 1000; // 24 hours
+    let deletedCount = 0;
+
+    for (const f of files) {
+      const fullPath = path.join(TEMP_DIR, f);
+      try {
+        const stats = fs.statSync(fullPath);
+        if (stats.isFile() && (now - stats.mtimeMs > maxAgeMs)) {
+          fs.unlinkSync(fullPath);
+          deletedCount++;
+        } else if (stats.isDirectory() && (now - stats.mtimeMs > maxAgeMs)) {
+          fs.rmSync(fullPath, { recursive: true, force: true });
+          deletedCount++;
+        }
+      } catch {}
+    }
+    if (deletedCount > 0) {
+      console.log(`🧹 [Temp Cleaner] Purged ${deletedCount} expired temporary files from ${TEMP_DIR}`);
+    }
+  } catch (err) {
+    console.warn("Temp cleanup notice:", err);
+  }
+}
+purgeOldTempFiles();
+
 // Helper to reliably locate python utility scripts in dev, packaged electron, or dist environments
 function getPythonScriptPath(scriptName: string): string {
   const possiblePaths = [
@@ -766,6 +797,48 @@ async function fetchKiriTTS(
   return Buffer.from(arrayBuffer);
 }
 
+export function cleanKhmerSpeechForTTS(text: string): string {
+  if (!text) return '';
+  let cleaned = String(text)
+    // Strip foreign annotations like Orig: "..."
+    .replace(/Orig\s*:\s*["'].*?["']/gi, '')
+    // Strip bracketed annotations like (Note: ...), [Sound: ...]
+    .replace(/\(.*?\)|\[.*?\]/g, '')
+    // Strip leading speaker label prefixes like "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:"
+    .replace(/^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|មេក្រុម|មេបញ្ជាការ|Marcus|Elena|[^\s:៖]{2,15})\s*[:៖-]\s*/gi, '')
+    .replace(/\bMarcus\b/gi, 'ម៉ាកុស')
+    .replace(/\bElena\b/gi, 'អេលេណា')
+    .replace(/\bSWAT\b/gi, 'ស្វាត')
+    .replace(/\bCyber\b/gi, 'សាយប័រ')
+    .replace(/\bVault\b/gi, 'វ៉ូល')
+    .replace(/\bPolice\b/gi, 'ប៉ូលីស')
+    .replace(/\bHeist\b/gi, 'ហាយស៍')
+    .replace(/\bFlash\b/gi, 'ហ្វ្លាស')
+    .replace(/\bLaser\b/gi, 'ឡាស៊ែរ')
+    .replace(/\bHackers?\b/gi, 'ហេកឃ័រ')
+    .replace(/\bTeam\b/gi, 'ក្រុម')
+    .replace(/\bMonaco\b/gi, 'ម៉ូណាកូ')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[a-zA-Z\u4e00-\u9fa5]+/g, ' ')
+    .replace(/[^\u1780-\u17FF0-9\s.,!?«»""''()\-—៖។ៗ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
+}
+
+export function calculateTtsSpeedRate(speed: number | undefined): string {
+  const numSpeed = typeof speed === 'number' && !isNaN(speed) ? speed : 1.25;
+  if (numSpeed >= 1.50) return '+50%';
+  if (numSpeed >= 1.45) return '+45%';
+  if (numSpeed >= 1.35) return '+40%';
+  if (numSpeed >= 1.30) return '+36%';
+  if (numSpeed >= 1.25) return '+32%';
+  if (numSpeed >= 1.20) return '+28%';
+  if (numSpeed >= 1.10) return '+22%';
+  if (numSpeed <= 0.95) return '+12%';
+  return '+32%'; // Standard rapid movie recap pace
+}
+
 async function generateSingleTTSBuffer(options: {
   cleanText: string;
   voiceTarget: string;
@@ -1053,11 +1126,7 @@ app.get("/api/tts", async (req, res) => {
       return res.status(400).send("Text is required");
     }
 
-    const cleanText = rawText
-      .replace(/[\r\n]+/g, " ")
-      .replace(/[^\u1780-\u17FFa-zA-Z0-9\s.,!?«»""''()\-—៖។ៗ]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    const cleanText = cleanKhmerSpeechForTTS(rawText);
 
     const voiceTarget = (req.query.voice as string) || (req.query.gender as string) || '';
     const requestedEmotion = (req.query.emotion as string) || '';
@@ -1315,28 +1384,6 @@ function streamStaticMediaFile(filePath: string, req: express.Request, res: expr
     res.status(500).send("Error streaming media");
   }
 }
-
-app.post("/api/upload-media", async (req, res) => {
-  try {
-    const { fileBase64, fileName, mimeType } = req.body;
-    if (!fileBase64) {
-      return res.status(400).json({ error: "Missing fileBase64" });
-    }
-
-    const safeBaseName = (fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
-    const storedFileName = `${Date.now()}_${safeBaseName}`;
-    const targetPath = path.join(UPLOADS_DIR, storedFileName);
-
-    const buffer = Buffer.from(fileBase64, "base64");
-    fs.writeFileSync(targetPath, buffer);
-
-    const mediaUrl = `/api/media/${storedFileName}`;
-    res.json({ success: true, url: mediaUrl, fileName: storedFileName });
-  } catch (err: any) {
-    console.error("Error uploading media:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 
 
@@ -2434,20 +2481,15 @@ app.post("/api/render/export", async (req, res) => {
     }
 
     // 3. Pre-generate all TTS segment audio clips using the exact same server TTS pipeline & cache
-    const ttsClips: Array<{ path: string; start_sec: number; volume_gain: number }> = [];
+    const ttsClips: Array<{ path: string; start_sec: number; end_sec?: number; target_dur?: number; volume_gain: number }> = [];
     const clientVoiceApiKey = ((req.headers['x-voice-api-key'] as string) || voiceApiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY || '').trim();
     const clientKiriApiKey = ((req.headers['x-kiritts-api-key'] as string) || kiriApiKey || process.env.KIRITTS_API_KEY || '').trim();
     const clientColabUrl = ((req.headers['x-colab-url'] as string) || colabUrl || process.env.VOXCPM2_API_URL || '').trim();
 
-    // Map playback speed to Edge/TTS rate percentage
-    let defaultEdgeRate = '+25%';
-    if (ttsSpeed >= 1.45) defaultEdgeRate = '+45%';
-    else if (ttsSpeed >= 1.30) defaultEdgeRate = '+36%';
-    else if (ttsSpeed >= 1.20) defaultEdgeRate = '+30%';
-    else if (ttsSpeed >= 1.10) defaultEdgeRate = '+25%';
-    else if (ttsSpeed <= 0.95) defaultEdgeRate = '+12%';
+    // Map playback speed to Edge/TTS rate percentage (Fast movie recap standard +32%)
+    const defaultEdgeRate = calculateTtsSpeedRate(ttsSpeed || 1.25);
 
-    console.log(`🎬 [Video Renderer] Pre-generating ${segments.length} TTS narration clips using Studio Cache & Neural Pipeline...`);
+    console.log(`🎬 [Video Renderer] Pre-generating ${segments.length} TTS narration clips at speed ${ttsSpeed || 1.25}x (${defaultEdgeRate}) using Studio Cache & Neural Pipeline...`);
 
     const parseTcSec = (tc: any): number => {
       if (typeof tc === 'number') return Math.max(0, tc);
@@ -2470,11 +2512,7 @@ app.post("/api/render/export", async (req, res) => {
       const script = (seg.khmer_script || '').trim();
       if (!script) continue;
 
-      const cleanText = script
-        .replace(/[\r\n]+/g, " ")
-        .replace(/[^\u1780-\u17FFa-zA-Z0-9\s.,!?«»""''()\-—៖។ៗ]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
+      const cleanText = cleanKhmerSpeechForTTS(script);
       if (!cleanText) continue;
 
       const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
@@ -2499,6 +2537,8 @@ app.post("/api/render/export", async (req, res) => {
       }
 
       const segStartTime = parseTcSec(seg.start_time || '00:00');
+      const segEndTime = parseTcSec(seg.end_time || seg.start_time || '00:00');
+      const targetDur = Math.max(0.6, segEndTime > segStartTime ? (segEndTime - segStartTime) : 3.0);
 
       try {
         const { audioBuffer } = await generateSingleTTSBuffer({
@@ -2519,6 +2559,8 @@ app.post("/api/render/export", async (req, res) => {
           ttsClips.push({
             path: clipFilePath,
             start_sec: segStartTime,
+            end_sec: segEndTime,
+            target_dur: targetDur,
             volume_gain: Number(seg.volume_gain || 1.0)
           });
         }
@@ -3127,13 +3169,14 @@ app.post("/api/render/batch-folder-episodes", async (req, res) => {
       // 3. Pre-generate TTS for this episode
       const epSegments = ep.recap_segments || ep.segments || [];
       const epTtsClips: any[] = [];
+      const batchTtsRate = calculateTtsSpeedRate(req.body.ttsSpeed || 1.25);
 
       for (let sIdx = 0; sIdx < epSegments.length; sIdx++) {
         const seg = epSegments[sIdx];
         const script = (seg.khmer_script || '').trim();
         if (!script) continue;
 
-        const cleanText = script.replace(/[\r\n]+/g, " ").replace(/[^\u1780-\u17FFa-zA-Z0-9\s.,!?«»""''()\-—៖។ៗ]/g, "").replace(/\s+/g, " ").trim();
+        const cleanText = cleanKhmerSpeechForTTS(script);
         if (!cleanText) continue;
 
         const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
@@ -3143,13 +3186,15 @@ app.post("/api/render/batch-folder-episodes", async (req, res) => {
 
         const emotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
         const segStartTime = parseTcSec(seg.start_time || '00:00');
+        const segEndTime = parseTcSec(seg.end_time || seg.start_time || '00:00');
+        const targetDur = Math.max(0.6, segEndTime > segStartTime ? (segEndTime - segStartTime) : 3.0);
 
         try {
           const { audioBuffer } = await generateSingleTTSBuffer({
             cleanText,
             voiceTarget: effectiveVoice,
             requestedEmotion: emotion,
-            requestedRate: '+25%',
+            requestedRate: batchTtsRate,
             voiceApiKey: clientVoiceApiKey,
             kiriApiKey: clientKiriApiKey,
             colabUrlOverride: clientColabUrl,
@@ -3163,6 +3208,8 @@ app.post("/api/render/batch-folder-episodes", async (req, res) => {
             epTtsClips.push({
               path: clipFile,
               start_sec: segStartTime,
+              end_sec: segEndTime,
+              target_dur: targetDur,
               volume_gain: Number(seg.volume_gain || 1.0)
             });
           }
@@ -3435,6 +3482,7 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
       if (shouldBake) {
         const epSegments = ep.recap_segments || ep.segments || [];
         const epTtsClips: any[] = [];
+        const seriesTtsRate = calculateTtsSpeedRate(req.body.ttsSpeed || 1.25);
 
         // Generate TTS for this episode
         for (let sIdx = 0; sIdx < epSegments.length; sIdx++) {
@@ -3442,7 +3490,7 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
           const script = (seg.khmer_script || '').trim();
           if (!script) continue;
 
-          const cleanText = script.replace(/[\r\n]+/g, " ").replace(/[^\u1780-\u17FFa-zA-Z0-9\s.,!?«»""''()\-—៖។ៗ]/g, "").replace(/\s+/g, " ").trim();
+          const cleanText = cleanKhmerSpeechForTTS(script);
           if (!cleanText) continue;
 
           const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
@@ -3452,13 +3500,15 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
 
           const emotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
           const segStartTime = parseTcSec(seg.start_time || '00:00');
+          const segEndTime = parseTcSec(seg.end_time || seg.start_time || '00:00');
+          const targetDur = Math.max(0.6, segEndTime > segStartTime ? (segEndTime - segStartTime) : 3.0);
 
           try {
             const { audioBuffer } = await generateSingleTTSBuffer({
               cleanText,
               voiceTarget: effectiveVoice,
               requestedEmotion: emotion,
-              requestedRate: '+25%',
+              requestedRate: seriesTtsRate,
               voiceApiKey: clientVoiceApiKey,
               kiriApiKey: clientKiriApiKey,
               colabUrlOverride: clientColabUrl,
@@ -3472,6 +3522,8 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
               epTtsClips.push({
                 path: clipFile,
                 start_sec: segStartTime,
+                end_sec: segEndTime,
+                target_dur: targetDur,
                 volume_gain: Number(seg.volume_gain || 1.0)
               });
             }

@@ -320,15 +320,6 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
       console.warn('Auto-save recap to SQLite failed:', dbErr);
     }
 
-    // Auto-create folder in DB if needed
-    try {
-      await fetch('/api/db/folders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: folderTitle, color: '#3B82F6' })
-      });
-    } catch {}
-
     return fullRecap;
   };
 
@@ -339,6 +330,16 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
     isCancelledRef.current = false;
 
     const folderTitle = (batchFolderName || 'ស៊េរីរឿងថ្មី').trim();
+
+    // Auto-create/ensure single folder in DB ONCE before starting batch episode loop
+    try {
+      await fetch('/api/db/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: folderTitle, color: '#3B82F6' })
+      });
+    } catch {}
+
     const completedResults: MovieRecapResult[] = [];
     let runningContext = '';
 

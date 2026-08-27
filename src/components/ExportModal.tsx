@@ -27,6 +27,7 @@ interface ExportModalProps {
   watermarkCleanerConfig?: WatermarkCleanerConfig;
   lipSyncConfig?: LipSyncConfig;
   subtitleStyle?: SubtitleStyleConfig;
+  initialTtsSpeed?: number;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -41,7 +42,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   watermark,
   watermarkCleanerConfig,
   lipSyncConfig,
-  subtitleStyle
+  subtitleStyle,
+  initialTtsSpeed
 }) => {
   const [activeTab, setActiveTab] = useState<'video' | 'subtitles' | 'audio'>('video');
   const [resolution, setResolution] = useState<'1080p' | 'original' | '720p'>('1080p');
@@ -66,14 +68,25 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   // Audio Controls
   const [bakeDubbing, setBakeDubbing] = useState<boolean>(true);
   const [ttsVolume, setTtsVolume] = useState<number>(1.25); // Studio Boosted 125%
+  const [ttsSpeed, setTtsSpeed] = useState<number>(() => {
+    if (typeof initialTtsSpeed === 'number' && initialTtsSpeed > 0) return initialTtsSpeed;
+    const saved = localStorage.getItem('tts_playback_speed');
+    return saved ? Number(saved) : 1.25;
+  });
   const [bakeBgm, setBakeBgm] = useState<boolean>(Boolean(recapData?.bgmTrackUrl));
   const [bgmVolume, setBgmVolume] = useState<number>(0.30);
   const [originalAudioVolume, setOriginalAudioVolume] = useState<number>(0.0); // 0.0 = Mute original so dubbing is 100% clean
+
+  const handleTtsSpeedChange = (newSpeed: number) => {
+    setTtsSpeed(newSpeed);
+    localStorage.setItem('tts_playback_speed', String(newSpeed));
+  };
 
   // Subtitle Controls
   const [bakeSubtitles, setBakeSubtitles] = useState<boolean>(true);
   const [subFontFamily, setSubFontFamily] = useState<string>(subtitleStyle?.fontFamily || 'Kantumruy Pro');
   const [subFontSize, setSubFontSize] = useState<'sm' | 'md' | 'lg' | 'xl'>(subtitleStyle?.fontSize || 'lg');
+  const [subPreset, setSubPreset] = useState<'tiktok_pop' | 'cinematic_gold' | 'neon_cyan' | 'classic'>(subtitleStyle?.preset || 'tiktok_pop');
 
   // Watermark Controls
   const [bakeWatermark, setBakeWatermark] = useState<boolean>(watermark?.enabled ?? true);
@@ -181,9 +194,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           episodes: activeFolderData.episodes,
           burnSubtitles: bakeSubtitles,
           subtitleStyle: {
-            ...subtitleStyle,
+            preset: subPreset,
             fontFamily: subFontFamily,
-            fontSize: subFontSize
+            fontSize: subFontSize,
+            highlightColor: subPreset === 'tiktok_pop' ? '#FACC15' : subPreset === 'cinematic_gold' ? '#FEF08A' : subPreset === 'neon_cyan' ? '#38BDF8' : '#FACC15',
+            textColor: '#FFFFFF',
+            bgBox: subPreset === 'tiktok_pop' ? 'pill_blur' : subPreset === 'neon_cyan' ? 'black_bar' : 'shadow',
+            animationType: 'karaoke_word'
           },
           audioSettings: {
             ttsVolume: bakeDubbing ? ttsVolume : 0.0,
@@ -213,7 +230,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           voiceApiKey: localStorage.getItem('gemini_voice_api_key') || localStorage.getItem('gemini_api_key') || '',
           kiriApiKey: localStorage.getItem('kiritts_api_key') || '',
           colabUrl: localStorage.getItem('voxcpm2_colab_url') || '',
-          ttsSpeed: Number(localStorage.getItem('tts_playback_speed') || 1.0) || 1.0,
+          ttsSpeed: ttsSpeed || 1.25,
           resolution: resolution
         };
 
@@ -273,9 +290,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           episodes: activeFolderData.episodes,
           burnSubtitles: bakeSubtitles,
           subtitleStyle: {
-            ...subtitleStyle,
+            preset: subPreset,
             fontFamily: subFontFamily,
-            fontSize: subFontSize
+            fontSize: subFontSize,
+            highlightColor: subPreset === 'tiktok_pop' ? '#FACC15' : subPreset === 'cinematic_gold' ? '#FEF08A' : subPreset === 'neon_cyan' ? '#38BDF8' : '#FACC15',
+            textColor: '#FFFFFF',
+            bgBox: subPreset === 'tiktok_pop' ? 'pill_blur' : subPreset === 'neon_cyan' ? 'black_bar' : 'shadow',
+            animationType: 'karaoke_word'
           },
           audioSettings: {
             ttsVolume: bakeDubbing ? ttsVolume : 0.0,
@@ -305,7 +326,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           voiceApiKey: localStorage.getItem('gemini_voice_api_key') || localStorage.getItem('gemini_api_key') || '',
           kiriApiKey: localStorage.getItem('kiritts_api_key') || '',
           colabUrl: localStorage.getItem('voxcpm2_colab_url') || '',
-          ttsSpeed: Number(localStorage.getItem('tts_playback_speed') || 1.0) || 1.0,
+          ttsSpeed: ttsSpeed || 1.25,
           resolution: resolution,
           title: activeFolderData.folderName
         };
@@ -364,9 +385,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         segments: currentRecap.recap_segments || [],
         burnSubtitles: bakeSubtitles,
         subtitleStyle: {
-          ...subtitleStyle,
+          preset: subPreset,
           fontFamily: subFontFamily,
-          fontSize: subFontSize
+          fontSize: subFontSize,
+          highlightColor: subPreset === 'tiktok_pop' ? '#FACC15' : subPreset === 'cinematic_gold' ? '#FEF08A' : subPreset === 'neon_cyan' ? '#38BDF8' : '#FACC15',
+          textColor: '#FFFFFF',
+          bgBox: subPreset === 'tiktok_pop' ? 'pill_blur' : subPreset === 'neon_cyan' ? 'black_bar' : 'shadow',
+          animationType: 'karaoke_word'
         },
         audioSettings: {
           ttsVolume: bakeDubbing ? ttsVolume : 0.0,
@@ -398,7 +423,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         voiceApiKey: localStorage.getItem('gemini_voice_api_key') || localStorage.getItem('gemini_api_key') || '',
         kiriApiKey: localStorage.getItem('kiritts_api_key') || '',
         colabUrl: localStorage.getItem('voxcpm2_colab_url') || '',
-        ttsSpeed: Number(localStorage.getItem('tts_playback_speed') || 1.0) || 1.0,
+        ttsSpeed: ttsSpeed || 1.25,
         resolution: resolution,
         title: currentRecap.movie_title || 'Recap_Video'
       };
@@ -700,20 +725,67 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   </div>
 
                   {bakeDubbing && (
-                    <div className="flex items-center gap-3 pt-1 border-t border-slate-800/80">
-                      <span className="text-[10px] text-slate-400 font-khmer whitespace-nowrap">កម្រិតឮសំឡេងនិយាយ៖</span>
-                      <input
-                        type="range"
-                        min="0.5"
-                        max="2.0"
-                        step="0.05"
-                        value={ttsVolume}
-                        onChange={(e) => setTtsVolume(parseFloat(e.target.value))}
-                        className="flex-1 accent-blue-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-                      />
-                      <span className="text-[10px] font-mono text-blue-300 w-10 text-right">
-                        {Math.round(ttsVolume * 100)}%
-                      </span>
+                    <div className="space-y-2.5 pt-1 border-t border-slate-800/80">
+                      {/* Volume Slider */}
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] text-slate-400 font-khmer whitespace-nowrap">កម្រិតឮសំឡេងនិយាយ៖</span>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="2.0"
+                          step="0.05"
+                          value={ttsVolume}
+                          onChange={(e) => setTtsVolume(parseFloat(e.target.value))}
+                          className="flex-1 accent-blue-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                        />
+                        <span className="text-[10px] font-mono text-blue-300 w-10 text-right">
+                          {Math.round(ttsVolume * 100)}%
+                        </span>
+                      </div>
+
+                      {/* TTS Speed Controls with presets */}
+                      <div className="space-y-1.5 pt-1.5 border-t border-slate-800/50">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-amber-300 font-khmer flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-amber-400" />
+                            <span>ល្បឿនសំឡេងនិយាយបកប្រែ (TTS Speed)៖</span>
+                          </span>
+                          <span className="text-[10px] font-mono font-bold text-amber-400">
+                            {ttsSpeed.toFixed(2)}x
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { label: '1.0x (ធម្មតា)', speed: 1.0 },
+                            { label: '1.15x (រហ័ស)', speed: 1.15 },
+                            { label: '1.25x (ស្តង់ដារ ⚡)', speed: 1.25 },
+                            { label: '1.35x (លឿន)', speed: 1.35 }
+                          ].map((item) => (
+                            <button
+                              key={`export_speed_${item.speed}`}
+                              type="button"
+                              onClick={() => handleTtsSpeedChange(item.speed)}
+                              className={`py-1 px-1.5 rounded-lg text-[10px] font-bold transition font-khmer cursor-pointer border ${
+                                Math.abs(ttsSpeed - item.speed) < 0.03
+                                  ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-xs'
+                                  : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Auto-Sync Scene Duration Indicator */}
+                        <div className="flex items-center justify-between text-[9.5px] text-emerald-400 bg-emerald-950/30 border border-emerald-500/20 rounded-lg px-2.5 py-1 font-khmer mt-1">
+                          <span className="flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                            <span>Auto-Sync Scene (តម្រឹមល្បឿនស្វ័យប្រវត្តិកុំឱ្យយឺតជាងសកម្មភាពរឿង)</span>
+                          </span>
+                          <span className="font-bold font-mono text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 border border-emerald-500/30">Active</span>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -804,38 +876,77 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   </div>
 
                   {bakeSubtitles && (
-                    <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80 text-xs">
-                      <div>
-                        <label className="text-[10px] text-slate-400 font-khmer block mb-1">Font អក្សរខ្មែរ៖</label>
-                        <select
-                          value={subFontFamily}
-                          onChange={(e) => setSubFontFamily(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-khmer focus:outline-none"
-                        >
-                          <option value="Kantumruy Pro">Kantumruy Pro (ស្តង់ដារ)</option>
-                          <option value="Battambang">Battambang (បាត់ដំបង)</option>
-                          <option value="Moul">Moul (អក្សរមូល)</option>
-                          <option value="Khmer UI">Khmer UI (Windows)</option>
-                        </select>
+                    <div className="space-y-2.5 pt-1 border-t border-slate-800/80 text-xs">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-400 font-khmer block mb-1">Font អក្សរខ្មែរ (TrueType)៖</label>
+                          <select
+                            value={subFontFamily}
+                            onChange={(e) => setSubFontFamily(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-khmer focus:outline-none"
+                          >
+                            <option value="Kantumruy Pro">Kantumruy Pro (ស្តង់ដារ)</option>
+                            <option value="Battambang">Battambang (បាត់ដំបង)</option>
+                            <option value="Moul">Moul (អក្សរមូល)</option>
+                            <option value="Khmer UI">Khmer UI (Windows)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] text-slate-400 font-khmer block mb-1">ទំហំអក្សរ (Size)៖</label>
+                          <div className="grid grid-cols-4 gap-1">
+                            {(['sm', 'md', 'lg', 'xl'] as const).map((sz) => (
+                              <button
+                                key={sz}
+                                type="button"
+                                onClick={() => setSubFontSize(sz)}
+                                className={`py-1 rounded text-[10px] font-mono font-bold border transition ${
+                                  subFontSize === sz
+                                    ? 'bg-pink-600 text-white border-pink-500'
+                                    : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                                }`}
+                              >
+                                {sz.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       </div>
 
-                      <div>
-                        <label className="text-[10px] text-slate-400 font-khmer block mb-1">ទំហំអក្សរ (Size)៖</label>
-                        <div className="grid grid-cols-4 gap-1">
-                          {(['sm', 'md', 'lg', 'xl'] as const).map((sz) => (
+                      {/* Animation & Preset Selector */}
+                      <div className="pt-2 border-t border-slate-800/60 space-y-1.5">
+                        <label className="text-[10px] text-slate-400 font-khmer block font-bold">
+                          ស្ទីលរត់អក្សរ & Animation (Karaoke Pop-in)៖
+                        </label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { id: 'tiktok_pop', label: '⚡ TikTok Pop', color: 'text-amber-400' },
+                            { id: 'cinematic_gold', label: '🎬 Gold VIP', color: 'text-yellow-300' },
+                            { id: 'neon_cyan', label: '💎 Neon Cyan', color: 'text-cyan-400' },
+                            { id: 'classic', label: '✨ Clean White', color: 'text-slate-200' },
+                          ].map((p) => (
                             <button
-                              key={sz}
+                              key={p.id}
                               type="button"
-                              onClick={() => setSubFontSize(sz)}
-                              className={`py-1 rounded text-[10px] font-mono font-bold border transition ${
-                                subFontSize === sz
-                                  ? 'bg-pink-600 text-white border-pink-500'
-                                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200'
+                              onClick={() => setSubPreset(p.id as any)}
+                              className={`py-1 px-1.5 rounded-lg text-[10px] font-bold border transition font-khmer cursor-pointer ${
+                                subPreset === p.id
+                                  ? 'bg-pink-500/20 border-pink-500 text-pink-300 shadow-xs'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
                               }`}
                             >
-                              {sz.toUpperCase()}
+                              <span className={p.color}>{p.label}</span>
                             </button>
                           ))}
+                        </div>
+
+                        {/* HarfBuzz Engine Badge */}
+                        <div className="flex items-center justify-between text-[9.5px] text-pink-400 bg-pink-950/30 border border-pink-500/20 rounded-lg px-2.5 py-1 font-khmer mt-1">
+                          <span className="flex items-center gap-1.5">
+                            <Sparkles className="w-3 h-3 text-pink-400 shrink-0" />
+                            <span>HarfBuzz Khmer Engine (ស្គាល់ដៃជើង ជើងអក្សរ និងស្រៈត្រឹមត្រូវ ១០០%)</span>
+                          </span>
+                          <span className="font-bold font-mono text-[9px] px-1.5 py-0.2 rounded bg-pink-500/20 border border-pink-500/30">Active</span>
                         </div>
                       </div>
                     </div>

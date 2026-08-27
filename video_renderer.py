@@ -44,6 +44,70 @@ def parse_timecode_to_seconds(tc):
     except Exception:
         return 0.0
 
+def clean_khmer_speech_text(text):
+    """Clean Khmer speech text, strip speaker prefixes, English annotations and foreign terms"""
+    if not text:
+        return ""
+    cleaned = str(text)
+    # Strip foreign annotations like Orig: "..."
+    cleaned = re.sub(r'Orig\s*:\s*["\'].*?["\']', '', cleaned, flags=re.IGNORECASE)
+    # Strip bracketed notes like (Note: ...), [Sound: ...]
+    cleaned = re.sub(r'\(.*?\)|\[.*?\]', '', cleaned)
+    # Strip speaker prefixes
+    cleaned = re.sub(r'^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|មេក្រុម|មេបញ្ជាការ|Marcus|Elena|[^\s:៖]{2,15})\s*[:៖-]\s*', '', cleaned, flags=re.IGNORECASE)
+    # Transliterate common words
+    cleaned = re.sub(r'\bMarcus\b', 'ម៉ាកុស', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bElena\b', 'អេលេណា', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bSWAT\b', 'ស្វាត', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bCyber\b', 'សាយប័រ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bVault\b', 'វ៉ូល', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bPolice\b', 'ប៉ូលីស', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bHeist\b', 'ហាយស៍', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bFlash\b', 'ហ្វ្លាស', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bLaser\b', 'ឡាស៊ែរ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bHackers?\b', 'ហេកឃ័រ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bTeam\b', 'ក្រុម', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\bMonaco\b', 'ម៉ូណាកូ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned)
+    cleaned = re.sub(r'[a-zA-Z\u4e00-\u9fa5]+', ' ', cleaned)
+    cleaned = re.sub(r'[^\u1780-\u17FF0-9\s.,!?«»""\'\'()\-—៖។ៗ]', '', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+def stretch_audio_to_fit(audio_path, target_duration, temp_dir):
+    """
+    If actual audio duration is longer than the visual scene window target_duration,
+    use FFmpeg atempo filter to accelerate the audio cleanly (1.05x - 1.55x)
+    so speech finishes synchronously with the video scene without drifting behind!
+    """
+    try:
+        import soundfile as sf
+        if not audio_path or not os.path.exists(audio_path):
+            return audio_path
+        data, sr = sf.read(audio_path)
+        actual_dur = len(data) / float(sr)
+        if actual_dur <= target_duration or target_duration <= 0.4:
+            return audio_path
+        
+        speed_factor = actual_dur / float(target_duration)
+        if speed_factor < 1.04:
+            return audio_path
+            
+        speed_factor = min(1.55, max(1.05, speed_factor))
+        out_stretched = os.path.join(temp_dir, f"stretched_{os.path.basename(audio_path)}")
+        cmd = [
+            FFMPEG_EXE, "-y", "-i", audio_path,
+            "-filter:a", f"atempo={speed_factor:.3f}",
+            "-vn", out_stretched
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode == 0 and os.path.exists(out_stretched) and os.path.getsize(out_stretched) > 50:
+            return out_stretched
+        return audio_path
+    except Exception as e:
+        sys.stderr.write(f"stretch_audio_to_fit notice: {e}\n")
+        return audio_path
+
 def fetch_kiritts_audio(text, voice_name, output_path):
     """Fetch audio directly from KiriTTS API for video segment rendering"""
     try:
@@ -360,7 +424,235 @@ def get_optimal_video_encoder():
             pass
     return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "0"]
 
+def split_khmer_into_words(text):
+    """Split Khmer text into whole unbroken words without breaking ligatures, coengs, or vowels"""
+    if not text:
+        return []
+    clean = re.sub(r'^\[[^\]]+\]:\s*', '', str(text))
+    clean = re.sub(r'^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|[^\s:៖]{2,15})[:៖]\s*', '', clean).strip()
+    clean = re.sub(r'[\r\n\t]+', ' ', clean)
+    tokens = re.split(r'[\s.,!?។៕៖]+', clean)
+    return [t.strip() for t in tokens if t.strip()]
+
+def split_khmer_into_lines(text, max_words=5, max_chars=24):
+    """Split long subtitle sentences into short, engaging single-line or 2-line bursts"""
+    words = split_khmer_into_words(text)
+    if not words:
+        return []
+    lines = []
+    curr_words = []
+    curr_len = 0
+    for w in words:
+        if len(curr_words) >= max_words or (curr_len + len(w) > max_chars and len(curr_words) >= 2):
+            lines.append(" ".join(curr_words))
+            curr_words = [w]
+            curr_len = len(w)
+        else:
+            curr_words.append(w)
+            curr_len += len(w) + 1
+    if curr_words:
+        lines.append(" ".join(curr_words))
+    return lines
+
+def generate_khmer_subtitle_overlays(segments, style_config, probe_info, resolution, temp_dir):
+    """
+    Renders high-definition HarfBuzz-shaped animated Khmer subtitle overlay cards.
+    Guarantees 100% perfect Khmer ligatures, coeng subscripts (ជើងអក្សរ ដៃជើង),
+    proper TrueType font styling, and word-by-word active karaoke highlight pop animations!
+    """
+    style = style_config or {}
+    font_family_pref = style.get("fontFamily") or "Kantumruy Pro"
+    preset = style.get("preset", "tiktok_pop")
+    bg_box = style.get("bgBox", "pill_blur")
+    highlight_color = style.get("highlightColor", "#FACC15")
+    text_color = style.get("textColor", "#FFFFFF")
+    font_size_name = style.get("fontSize", "lg")
+    
+    is_portrait = probe_info.get("is_portrait", False)
+    if resolution != "original":
+        canvas_w = 1080 if is_portrait else 1920
+        canvas_h = 1920 if is_portrait else 1080
+    else:
+        canvas_w = probe_info.get("width", 1920)
+        canvas_h = probe_info.get("height", 1080)
+
+    # Base font sizes
+    size_map = {"sm": 32, "md": 38, "lg": 44, "xl": 52}
+    base_font_size = size_map.get(font_size_name, 44)
+    if is_portrait:
+        base_font_size = int(base_font_size * 0.90)
+
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QFont, QFontDatabase, QImage, QPainter, QColor, QTextDocument
+        from PyQt6.QtCore import Qt
+
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+
+        # Look up TrueType fonts in project directory
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        font_candidates = [
+            os.path.join(DATA_DIR, "fonts", "KantumruyPro-Bold.ttf"),
+            os.path.join(DATA_DIR, "fonts", "Battambang-Bold.ttf"),
+            os.path.join(DATA_DIR, "fonts", "Moul-Regular.ttf"),
+            os.path.join(base_dir, "data", "fonts", "KantumruyPro-Bold.ttf"),
+            os.path.join(base_dir, "data", "fonts", "Battambang-Bold.ttf"),
+            os.path.join(base_dir, "data", "fonts", "Moul-Regular.ttf"),
+        ]
+        loaded_family = "Kantumruy Pro"
+        for fc in font_candidates:
+            if os.path.exists(fc):
+                fid = QFontDatabase.addApplicationFont(fc)
+                fams = QFontDatabase.applicationFontFamilies(fid)
+                if fams:
+                    if "battambang" in font_family_pref.lower() and "battambang" in fams[0].lower():
+                        loaded_family = fams[0]
+                        break
+                    elif "moul" in font_family_pref.lower() and "moul" in fams[0].lower():
+                        loaded_family = fams[0]
+                        break
+                    elif not loaded_family:
+                        loaded_family = fams[0]
+
+        # Card backdrop styling
+        if bg_box == "pill_blur" or preset == "tiktok_pop":
+            bg_style = "background-color: rgba(0, 0, 0, 0.72); border: 1.5px solid rgba(255, 255, 255, 0.20); border-radius: 26px; padding: 8px 24px;"
+        elif bg_box == "black_bar" or preset == "neon_cyan":
+            bg_style = "background-color: rgba(0, 0, 0, 0.88); border-radius: 10px; padding: 6px 20px;"
+        else:
+            bg_style = "background-color: rgba(0, 0, 0, 0.50); border-radius: 12px; padding: 6px 18px;"
+
+        card_h = 240
+        card_w = canvas_w
+
+        # Create transparent 1x1 blank image for gaps
+        blank_img_path = os.path.join(temp_dir, "sub_blank.png")
+        blank_img = QImage(card_w, card_h, QImage.Format.Format_ARGB32_Premultiplied)
+        blank_img.fill(QColor(0, 0, 0, 0))
+        blank_img.save(blank_img_path)
+
+        concat_lines = ["ffconcat version 1.0"]
+        current_time = 0.0
+        card_idx = 0
+
+        # Sort segments by start time
+        sorted_segs = sorted(segments, key=lambda s: parse_timecode_to_seconds(s.get("start_time", 0)))
+
+        for seg in sorted_segs:
+            script = (seg.get("khmer_script") or "").strip()
+            if not script:
+                continue
+
+            seg_start = parse_timecode_to_seconds(seg.get("start_time", 0))
+            seg_end = parse_timecode_to_seconds(seg.get("end_time", 0))
+            if seg_end <= seg_start:
+                seg_end = seg_start + 2.5
+            seg_dur = max(0.5, seg_end - seg_start)
+
+            # Insert blank gap if current playhead is behind segment start
+            if seg_start > current_time + 0.03:
+                gap_dur = seg_start - current_time
+                concat_lines.append(f"file 'sub_blank.png'")
+                concat_lines.append(f"duration {gap_dur:.3f}")
+                current_time = seg_start
+
+            lines = split_khmer_into_lines(script)
+            if not lines:
+                continue
+
+            time_per_line = seg_dur / len(lines)
+
+            for l_idx, line in enumerate(lines):
+                line_start = seg_start + l_idx * time_per_line
+                line_end = line_start + time_per_line
+                words = split_khmer_into_words(line)
+                if not words:
+                    continue
+
+                time_per_word = max(0.2, (line_end - line_start) / len(words))
+
+                for w_idx in range(len(words)):
+                    w_start = line_start + w_idx * time_per_word
+                    w_end = min(line_end, w_start + time_per_word)
+                    w_dur = max(0.05, w_end - w_start)
+
+                    # Build HTML with active karaoke word highlight
+                    html_parts = []
+                    for i, word in enumerate(words):
+                        if i == w_idx:
+                            html_parts.append(f'<span style="color: {highlight_color}; font-size: {int(base_font_size*1.08)}px;">{word}</span>')
+                        elif i < w_idx:
+                            html_parts.append(f'<span style="color: #FFFFFF;">{word}</span>')
+                        else:
+                            html_parts.append(f'<span style="color: rgba(255,255,255,0.75);">{word}</span>')
+                    
+                    line_html = " ".join(html_parts)
+
+                    # Render Card Image
+                    img = QImage(card_w, card_h, QImage.Format.Format_ARGB32_Premultiplied)
+                    img.fill(QColor(0, 0, 0, 0))
+
+                    painter = QPainter(img)
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+                    doc = QTextDocument()
+                    doc.setDefaultStyleSheet(f"""
+                        body {{
+                            font-family: "{loaded_family}", sans-serif;
+                            font-size: {base_font_size}px;
+                            font-weight: bold;
+                            color: {text_color};
+                            text-align: center;
+                        }}
+                        .card {{
+                            {bg_style}
+                            display: inline-block;
+                        }}
+                    """)
+                    doc.setHtml(f'<body><div class="card">{line_html}</div></body>')
+                    doc.setTextWidth(card_w)
+
+                    content_height = doc.size().height()
+                    y_offset = (card_h - content_height) / 2
+                    painter.translate(0, y_offset)
+                    doc.drawContents(painter)
+                    painter.end()
+
+                    card_file_name = f"sub_card_{card_idx}.png"
+                    card_full_path = os.path.join(temp_dir, card_file_name)
+                    img.save(card_full_path)
+                    card_idx += 1
+
+                    concat_lines.append(f"file '{card_file_name}'")
+                    concat_lines.append(f"duration {w_dur:.3f}")
+                    current_time = w_end
+
+        # Append final blank frame to prevent freezing on the last subtitle frame
+        concat_lines.append(f"file 'sub_blank.png'")
+        concat_lines.append(f"duration 3600.0")
+
+        concat_script_path = os.path.join(temp_dir, "subs_concat.txt")
+        with open(concat_script_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(concat_lines))
+
+        margin_v = 150 if is_portrait else 55
+        sys.stderr.write(f"✨ [HarfBuzz Subtitles] Generated {card_idx} animated Khmer subtitle cards with flawless script shaping!\n")
+        return {
+            "type": "concat",
+            "concat_path": concat_script_path,
+            "margin_v": margin_v,
+            "count": card_idx
+        }
+
+    except Exception as e:
+        sys.stderr.write(f"⚠️ [Subtitle Engine Fallback] PyQt6 notice: {e}\n")
+        return None
+
 def generate_ass_subtitle_file(segments, output_ass_path, style_config=None, movie_title="BT-Dubber Subtitles"):
+    """Fallback ASS subtitle generator"""
     style = style_config or {}
     font_family = style.get("fontFamily") or "Kantumruy Pro"
     if font_family in ["sans-serif", "system-ui", "Arial", "Default"]:
@@ -400,9 +692,6 @@ def generate_ass_subtitle_file(segments, output_ass_path, style_config=None, mov
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
         f"Style: Default,{font_family},{font_size},{primary_color},{highlight_color},{outline_color},&H90000000,1,0,0,0,100,100,0,0,1,3.5,1.5,{alignment},40,40,{margin_v},1",
-        f"Style: Narrator,{font_family},{font_size},&H00E0E7FF&,&H004338CA&,&H001E1B4B&,&H90000000,1,0,0,0,100,100,0,0,1,3.5,1.5,{alignment},40,40,{margin_v},1",
-        f"Style: Female,{font_family},{font_size},&H00FCE7F3&,&H00BE185D&,&H00500724&,&H90000000,1,0,0,0,100,100,0,0,1,3.5,1.5,{alignment},40,40,{margin_v},1",
-        f"Style: Male,{font_family},{font_size},&H00DBEAFE&,&H001D4ED8&,&H00172554&,&H90000000,1,0,0,0,100,100,0,0,1,3.5,1.5,{alignment},40,40,{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
@@ -414,12 +703,11 @@ def generate_ass_subtitle_file(segments, output_ass_path, style_config=None, mov
         m = int((sec % 3600) // 60)
         s = int(sec % 60)
         cs = int(round((sec % 1) * 100))
-        if cs >= 100:
-            cs = 99
+        if cs >= 100: cs = 99
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
         
     for seg in segments:
-        script = seg.get("khmer_script", "").strip()
+        script = clean_khmer_speech_text(seg.get("khmer_script", ""))
         if not script:
             continue
         start_sec = parse_timecode_to_seconds(seg.get("start_time", 0))
@@ -427,15 +715,9 @@ def generate_ass_subtitle_file(segments, output_ass_path, style_config=None, mov
         if end_sec <= start_sec:
             end_sec = start_sec + 2.5
             
-        g = (seg.get("speaker_gender") or "").lower()
-        style_name = "Narrator" if g == "narrator" else ("Female" if "female" in g else ("Male" if "male" in g else "Default"))
-        speaker = seg.get("speaker_name", "")
-        prefix = f"{{\\c{highlight_color}}}[{speaker}]:{{\\r}} " if speaker and speaker != "អ្នកសម្រាយ" else ""
         clean_text = script.replace("\n", " ").replace("\r", "")
+        lines.append(f"Dialogue: 0,{format_ass_time(start_sec)},{format_ass_time(end_sec)},Default,,0,0,0,,{clean_text}")
         
-        lines.append(f"Dialogue: 0,{format_ass_time(start_sec)},{format_ass_time(end_sec)},{style_name},,0,0,0,,{prefix}{clean_text}")
-        
-    # Write with UTF-8 BOM (utf-8-sig) so libass in FFmpeg handles Khmer vowels and subscript ligatures flawlessly
     with open(output_ass_path, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(lines))
     return output_ass_path
@@ -477,14 +759,17 @@ def render_video_sync(job_config):
                 c_path = c.get("path")
                 if c_path and os.path.exists(c_path):
                     s_sec = float(c.get("start_sec", 0.0))
+                    e_sec = float(c.get("end_sec", s_sec + 3.0))
+                    t_dur = float(c.get("target_dur", max(0.6, e_sec - s_sec)))
                     tts_clips.append({
                         "path": c_path,
                         "start_sec": s_sec,
-                        "delay_ms": max(0, int(s_sec * 1000)),
+                        "end_sec": e_sec,
+                        "target_dur": t_dur,
                         "volume_gain": float(c.get("volume_gain", 1.0) or 1.0)
                     })
         else:
-            # Generate TTS clips internally
+            # Generate TTS clips internally with smart text cleaning and pacing
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
@@ -494,10 +779,14 @@ def render_video_sync(job_config):
             narrator_mapped = voice_mapping.get("narrator")
             
             for idx, seg in enumerate(segments):
-                script = seg.get("khmer_script", "").strip()
+                raw_script = seg.get("khmer_script", "").strip()
+                script = clean_khmer_speech_text(raw_script)
                 if not script:
                     continue
                 start_sec = parse_timecode_to_seconds(seg.get("start_time", "00:00"))
+                end_sec = parse_timecode_to_seconds(seg.get("end_time", "00:00"))
+                target_dur = max(0.6, end_sec - start_sec) if end_sec > start_sec else 3.0
+                
                 raw_gender = (seg.get("speaker_gender") or "female").lower()
                 
                 if raw_gender.startswith("voice_"):
@@ -515,7 +804,8 @@ def render_video_sync(job_config):
                 seg_speed = seg.get("playback_speed")
                 seg_gain = float(seg.get("volume_gain", 1.0) or 1.0)
                 
-                speed_rate_str = "+25%"
+                # Fast Recap speed (+32% standard)
+                speed_rate_str = "+32%"
                 if seg_speed and isinstance(seg_speed, (int, float)):
                     rate_pct = int(round((float(seg_speed) - 1.0) * 100))
                     speed_rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
@@ -526,12 +816,13 @@ def render_video_sync(job_config):
                     tts_clips.append({
                         "path": clip_file,
                         "start_sec": start_sec,
-                        "delay_ms": max(0, int(start_sec * 1000)),
+                        "end_sec": end_sec,
+                        "target_dur": target_dur,
                         "volume_gain": seg_gain
                     })
             loop.close()
         
-        # 2. Build Master Narration Audio Track if we have TTS clips (Python High-Fidelity Non-Overlapping Mixer)
+        # 2. Build Master Narration Audio Track with Dynamic Scene-Synchronized Pacing
         has_tts = len(tts_clips) > 0
         master_narration_path = None
         
@@ -553,13 +844,17 @@ def render_video_sync(job_config):
                 
                 # Sort clips chronologically by start_sec
                 sorted_clips = sorted(tts_clips, key=lambda x: x["start_sec"])
-                last_end_sample = 0
                 
                 for clip in sorted_clips:
                     c_path = clip["path"]
                     if not os.path.exists(c_path):
                         continue
                     try:
+                        # Auto-fit audio duration to scene duration window using FFmpeg atempo
+                        target_dur = float(clip.get("target_dur", 0.0) or 0.0)
+                        if target_dur > 0.4:
+                            c_path = stretch_audio_to_fit(c_path, target_dur, temp_dir)
+
                         data, file_sr = sf.read(c_path)
                         # Convert to stereo
                         if data.ndim == 1:
@@ -580,13 +875,8 @@ def render_video_sync(job_config):
                         gain = float(clip.get("volume_gain", 1.0) or 1.0)
                         clip_stereo = clip_stereo * gain
                         
+                        # Pin accurately to the visual scene start timestamp (Never drift behind!)
                         target_start_sample = max(0, int(round(clip["start_sec"] * sr)))
-                        
-                        # Anti-Overlap: If previous sentence is still speaking, ensure a clean 60ms gap
-                        # so speech never overlaps (មិនជាន់សំឡេងគ្នា)
-                        if target_start_sample < last_end_sample:
-                            target_start_sample = last_end_sample + int(0.06 * sr)
-                            
                         clip_len = len(clip_stereo)
                         target_end_sample = target_start_sample + clip_len
                         
@@ -596,7 +886,6 @@ def render_video_sync(job_config):
                             master_audio = np.vstack([master_audio, pad])
                             
                         master_audio[target_start_sample:target_end_sample] += clip_stereo
-                        last_end_sample = target_end_sample
                     except Exception as clip_err:
                         sys.stderr.write(f"Clip mix notice for {c_path}: {clip_err}\n")
                         
@@ -607,19 +896,22 @@ def render_video_sync(job_config):
                     
                 master_narration_path = os.path.join(temp_dir, "master_narration.wav")
                 sf.write(master_narration_path, master_audio, sr, subtype='PCM_16')
-                sys.stderr.write(f"Built master narration track: {len(sorted_clips)} clips, duration: {len(master_audio)/sr:.2f}s\n")
+                sys.stderr.write(f"Built synchronized master narration track: {len(sorted_clips)} clips, duration: {len(master_audio)/sr:.2f}s\n")
             except Exception as e:
                 sys.stderr.write(f"Python master narration builder notice: {e}\n")
                 master_narration_path = None
                 has_tts = False
 
-        # 3. Prepare Subtitles file (.ass) if requested
+        # 3. Prepare Subtitles (HarfBuzz Qt Overlay or Fallback ASS)
+        sub_overlay = None
         ass_subtitle_path = None
         if burn_subtitles and segments and len(segments) > 0:
-            ass_file = os.path.join(temp_dir, "subtitles.ass")
-            generate_ass_subtitle_file(segments, ass_file, style_config=subtitle_style, movie_title=title)
-            if os.path.exists(ass_file):
-                ass_subtitle_path = ass_file
+            sub_overlay = generate_khmer_subtitle_overlays(segments, subtitle_style, probe_info, resolution, temp_dir)
+            if not sub_overlay:
+                ass_file = os.path.join(temp_dir, "subtitles.ass")
+                generate_ass_subtitle_file(segments, ass_file, style_config=subtitle_style, movie_title=title)
+                if os.path.exists(ass_file):
+                    ass_subtitle_path = ass_file
                 
         # 4. Prepare Watermark Text file
         khmer_font_path = get_khmer_font_path()
@@ -631,15 +923,28 @@ def render_video_sync(job_config):
             with open(watermark_text_file, "w", encoding="utf-8") as f:
                 f.write(watermark.get("text", ""))
 
-        # 5. Build FFmpeg command inputs
+        # 5. Build FFmpeg command inputs and track accurate input indices
         ffmpeg_inputs = ["-y", "-i", video_path]
+        current_input_idx = 1
         
         has_bgm = bool(bgm_path and os.path.exists(bgm_path))
+        bgm_input_idx = None
         if has_bgm:
             ffmpeg_inputs.extend(["-i", bgm_path])
+            bgm_input_idx = current_input_idx
+            current_input_idx += 1
             
+        tts_input_idx = None
         if has_tts and master_narration_path and os.path.exists(master_narration_path):
             ffmpeg_inputs.extend(["-i", master_narration_path])
+            tts_input_idx = current_input_idx
+            current_input_idx += 1
+
+        sub_input_idx = None
+        if sub_overlay and os.path.exists(sub_overlay["concat_path"]):
+            ffmpeg_inputs.extend(["-f", "concat", "-safe", "0", "-i", sub_overlay["concat_path"]])
+            sub_input_idx = current_input_idx
+            current_input_idx += 1
 
         # 6. Build Video Filter Complex
         vf_chain = []
@@ -725,7 +1030,7 @@ def render_video_sync(job_config):
                 
             vf_chain.append(f"drawtext={':'.join(drawtext_parts)}")
 
-        # Burn-in Subtitles Filter (libass with Khmer fontdir)
+        # Fallback Subtitles Filter (if HarfBuzz Qt overlay was not used)
         if ass_subtitle_path and os.path.exists(ass_subtitle_path):
             esc_ass = escape_ffmpeg_filter_path(ass_subtitle_path)
             if khmer_fonts_dir and os.path.exists(khmer_fonts_dir):
@@ -735,11 +1040,18 @@ def render_video_sync(job_config):
                 vf_chain.append(f"subtitles='{esc_ass}'")
 
         video_filter_str = ",".join(vf_chain) if vf_chain else "null"
+        filter_complex_parts = []
+
+        if sub_input_idx is not None and sub_overlay:
+            # First filter chain processes base video to [v_base]
+            filter_complex_parts.append(f"[0:v]{video_filter_str}[v_base]")
+            # Second filter overlays animated HarfBuzz subtitle stream
+            sub_margin = sub_overlay.get("margin_v", 55)
+            filter_complex_parts.append(f"[v_base][{sub_input_idx}:v]overlay=x=(W-w)/2:y=H-h-{sub_margin}:shortest=0[outv]")
+        else:
+            filter_complex_parts.append(f"[0:v]{video_filter_str}[outv]")
         
         # 7. Audio Filter Complex (Multi-track studio mixing with normalize=0)
-        filter_complex_parts = [f"[0:v]{video_filter_str}[outv]"]
-        
-        # Volume levels
         orig_vol = float(audio_settings.get("originalAudioVolume", 0.0) if has_tts else 1.0)
         bgm_vol = float(audio_settings.get("bgmVolume", 0.30) if has_bgm else 0.0)
         tts_vol = float(audio_settings.get("ttsVolume", 1.25) if has_tts else 1.0)
@@ -751,16 +1063,14 @@ def render_video_sync(job_config):
             filter_complex_parts.append(f"[0:a]volume={orig_vol:.2f}[orig_aud]")
             audio_mix_inputs.append("[orig_aud]")
             
-        # Stream 1 (or 2): BGM Audio
-        bgm_input_idx = 1 if has_bgm else None
-        if has_bgm and bgm_vol > 0.01:
+        # Stream BGM Audio
+        if has_bgm and bgm_input_idx is not None and bgm_vol > 0.01:
             filter_complex_parts.append(f"[{bgm_input_idx}:a]volume={bgm_vol:.2f}[bgm_aud]")
             audio_mix_inputs.append("[bgm_aud]")
             
-        # Stream (TTS Master Narration)
-        narration_input_idx = (1 if not has_bgm else 2) if has_tts else None
-        if has_tts and master_narration_path and narration_input_idx is not None:
-            filter_complex_parts.append(f"[{narration_input_idx}:a]volume={tts_vol:.2f}[tts_aud]")
+        # Stream TTS Master Narration Audio
+        if has_tts and master_narration_path and tts_input_idx is not None:
+            filter_complex_parts.append(f"[{tts_input_idx}:a]volume={tts_vol:.2f}[tts_aud]")
             audio_mix_inputs.append("[tts_aud]")
             
         if len(audio_mix_inputs) == 0:

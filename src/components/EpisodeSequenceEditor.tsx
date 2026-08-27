@@ -1005,6 +1005,7 @@ export const EpisodeSequenceEditor: React.FC<EpisodeSequenceEditorProps> = ({
           recapData={activeRecapForExport}
           antiCopyright={selectedClip?.antiCopyright || seriesProject.antiCopyright}
           watermark={watermarkState}
+          initialTtsSpeed={ttsSpeed}
         />
       )}
 
