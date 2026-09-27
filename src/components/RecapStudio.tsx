@@ -14,6 +14,7 @@ import { ExportModal } from './ExportModal';
 import { SubtitleStyleModal } from './SubtitleStyleModal';
 import { VideoCompressorModal } from './VideoCompressorModal';
 import { ReelsThumbnailModal } from './ReelsThumbnailModal';
+import { CapcutMobileStudio } from './CapcutMobileStudio';
 import { extractBgmInstrumentalTrack } from '../utils/vocalRemover';
 import { ToastContainer, ToastMessage, ToastType } from './ToastNotification';
 import { parseTimecode } from '../utils/sequenceUtils';
@@ -129,6 +130,21 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 }) => {
   // Studio UI state
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
+  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 768;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileScreen(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   const [mobileActiveTab, setMobileActiveTab] = useState<'video' | 'script' | 'timeline' | 'tools'>('video');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -1411,6 +1427,17 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     }
   };
 
+  const handleSeek = (sec: number) => {
+    setCurrentTimeSeconds(sec);
+    lastSpokenSegmentIdRef.current = null;
+    if (videoPlayerRef.current) {
+      videoPlayerRef.current.currentTime = sec;
+    }
+    if (bgmAudioRef.current && recapData?.bgmTrackUrl) {
+      bgmAudioRef.current.currentTime = sec;
+    }
+  };
+
   const handleSegmentChange = (id: number, field: keyof RecapSegment, value: any) => {
     if (!recapData) return;
     const updated = recapData.recap_segments.map(s => {
@@ -1878,10 +1905,72 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
   }, [recapData, savedRecaps]);
 
   return (
-    <div className="w-full bg-[#F3F4F6] min-h-screen text-gray-900 flex flex-col font-sans select-none">
+    <div className="w-full bg-[#000000] md:bg-[#F3F4F6] min-h-screen text-gray-900 flex flex-col font-sans select-none">
 
-      {/* 1. Studio Header */}
-      <StudioHeader
+      {isMobileScreen ? (
+        <CapcutMobileStudio
+          recapData={recapData}
+          videoRef={videoPlayerRef}
+          aspectRatio={aspectRatio}
+          onChangeAspectRatio={setAspectRatio}
+          currentTimeSeconds={currentTimeSeconds}
+          totalDurationSeconds={totalDurationSeconds}
+          isPlaying={isPlayingAll || playingSegmentId !== null}
+          onTogglePlay={handlePlayFullNarration}
+          onSeek={handleSeek}
+          onUpdateRecap={onUpdateRecap}
+          activeSegmentId={activeSegmentId !== null ? String(activeSegmentId) : null}
+          playingSegmentId={playingSegmentId !== null ? String(playingSegmentId) : null}
+          onPlaySegment={handlePlaySegment}
+          onSegmentChange={(id, updates) => {
+            const numId = Number(id);
+            if (!recapData) return;
+            const updated = recapData.recap_segments.map(s => {
+              if (s.segment_id === numId) return { ...s, ...updates };
+              return s;
+            });
+            onUpdateRecap({ ...recapData, recap_segments: updated });
+          }}
+          onAddSegment={handleAddSegment}
+          onDeleteSegment={(id) => handleDeleteSegment(Number(id))}
+          ttsSpeed={ttsSpeed}
+          onSpeedChange={onChangeTtsSpeed || (() => {})}
+          globalVoicePersona={globalVoicePersona}
+          onChangeGlobalVoicePersona={onChangeGlobalVoicePersona || (() => {})}
+          onOpenUpload={() => setIsUploadModalOpen(true)}
+          onOpenSaved={onOpenSaved}
+          onOpenThumbnailModal={() => setIsThumbnailModalOpen(true)}
+          onOpenExport={handleExport}
+          onOpenSubtitleModal={() => setIsSubtitleModalOpen(true)}
+          onOpenWatermarkCleaner={() => setIsWatermarkCleanerModalOpen(true)}
+          onOpenLipSync={() => setIsLipSyncModalOpen(true)}
+          onOpenCompressor={() => setIsCompressorModalOpen(true)}
+          onOpenBgmModal={() => setIsBgmModalOpen(true)}
+          onOpenApiKeyModal={onOpenApiKeyModal || (() => {})}
+          onOpenTikTokModal={onOpenTikTokModal}
+          onOpenUpdateModal={onOpenUpdateModal}
+          audioIsolationMode={audioIsolationMode}
+          onChangeAudioIsolationMode={setAudioIsolationMode}
+          bgmVolume={bgmVolume}
+          onChangeBgmVolume={setBgmVolume}
+          hasBgmTrack={!!recapData?.bgmTrackUrl}
+          onExtractBgm={handleExtractBgm}
+          isExtractingBgm={isExtractingBgm}
+          onBatchGenerateAllAudio={handleBatchGenerateAllAudio}
+          isBatchGeneratingAudio={isBatchGeneratingAudio}
+          batchProgress={batchProgress}
+          onProofreadScript={handleProofreadScript}
+          isProofreadingScript={isProofreadingScript}
+          onAutoDetectSpeakers={handleAutoDetectSpeakers}
+          isAutoDetectingSpeakers={isAutoDetectingSpeakers}
+          subtitleConfig={subtitleConfig}
+          currentActiveSegment={currentActiveSegment}
+          onToast={showToast}
+        />
+      ) : (
+        <div className="flex-1 flex flex-col w-full min-h-screen">
+          {/* 1. Studio Header */}
+          <StudioHeader
         movieTitle={recapData?.movie_title}
         savedCount={savedCount}
         onOpenSaved={onOpenSaved}
@@ -2355,6 +2444,8 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         </div>
 
       </div>
+    </div>
+  )}
 
       {/* Watermark Settings Modal */}
       <WatermarkModal
