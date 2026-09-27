@@ -18,10 +18,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22 (Required by Capacitor v8)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install Node Dependencies
@@ -39,12 +39,12 @@ jobs:
           fi
           npx cap sync ios
 
-      - name: Configure iOS Project (Code Signing Disabled for Sideloading)
+      - name: Configure iOS Project (Disable Code Signing for Sideloadly/TrollStore)
         run: |
-          # Ensure code signing is set to manual/none for archive
           cd ios/App
+          # Turn off automatic code signing in the pbxproj
           sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' App.xcodeproj/project.pbxproj || true
-          sed -i '' 's/DEVELOPMENT_TEAM = "";/DEVELOPMENT_TEAM = "";/g' App.xcodeproj/project.pbxproj || true
+          sed -i '' 's/DEVELOPMENT_TEAM = "[^"]*";/DEVELOPMENT_TEAM = "";/g' App.xcodeproj/project.pbxproj || true
           cd ../..
 
       - name: Build iOS Archive (xcodebuild)
@@ -58,14 +58,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Package App into .IPA format
         run: |
           mkdir -p Payload
-          cp -r build/App.xcarchive/Products/Applications/App.app Payload/
+          # Copy whatever .app bundle was created in the archive
+          cp -r build/App.xcarchive/Products/Applications/*.app Payload/
           zip -qr BT-Dubber-Studio-iOS.ipa Payload
-          echo "IPA Package generated successfully:"
+          echo "=== IPA Package generated successfully ==="
           ls -lh BT-Dubber-Studio-iOS.ipa
 
       - name: Upload .IPA Artifact
