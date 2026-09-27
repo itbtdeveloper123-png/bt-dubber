@@ -30,9 +30,12 @@ import {
   FolderOpen,
   Key,
   ShieldCheck,
-  Video
+  Video,
+  Server,
+  Wifi
 } from 'lucide-react';
 import { MovieRecapResult, RecapSegment, VoiceRolesMapping } from '../types';
+import { getApiBaseUrl, setApiBaseUrl } from '../utils/apiConfig';
 
 interface CapcutMobileStudioProps {
   recapData: MovieRecapResult | null;
@@ -150,8 +153,33 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
   const [activeTool, setActiveTool] = useState<CapcutActiveTool>('none');
   const [isClipMuted, setIsClipMuted] = useState<boolean>(false);
   const [resolutionMenuOpen, setResolutionMenuOpen] = useState<boolean>(false);
-  const [selectedQuality, setSelectedQuality] = useState<string>('AI UHD');
   const timelineScrollRef = useRef<HTMLDivElement>(null);
+
+  // Server PC Connection Settings (For Remote Python Render & SQLite DB)
+  const [serverUrlInput, setServerUrlInput] = useState<string>(() => getApiBaseUrl());
+  const [isCheckingServer, setIsCheckingServer] = useState<boolean>(false);
+  const [serverStatus, setServerStatus] = useState<'connected' | 'disconnected' | 'unknown'>('unknown');
+
+  const testServerConnection = async (url: string) => {
+    setIsCheckingServer(true);
+    try {
+      const clean = url.trim().replace(/\/+$/, '');
+      const res = await fetch(`${clean}/api/db/recaps`, { signal: AbortSignal.timeout(3500) });
+      if (res.ok) {
+        setServerStatus('connected');
+        setApiBaseUrl(clean);
+        onToast('success', '✅ ភ្ជាប់ទៅ Server PC ជោគជ័យ!', 'ឥឡូវនេះទូរស័ព្ទអាចប្រើប្រាស់ Python Render និង Database បានហើយ');
+      } else {
+        setServerStatus('disconnected');
+        onToast('error', '⚠️ មិនអាចភ្ជាប់បានទេ', 'សូមពិនិត្យមើល IP និងធានាថាបានបើក npm run dev លើកុំព្យូទ័រ');
+      }
+    } catch (e) {
+      setServerStatus('disconnected');
+      onToast('error', '⚠️ បរាជ័យក្នុងការភ្ជាប់', 'សូមប្រាកដថាទូរស័ព្ទ និងកុំព្យូទ័រភ្ជាប់ WiFi តែមួយ');
+    } finally {
+      setIsCheckingServer(false);
+    }
+  };
 
   // Toggle clip audio mute
   const toggleMuteClip = () => {
@@ -951,7 +979,44 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
 
             {/* SUB-SHEET 7: FILTERS & SETTINGS (តម្រង) */}
             {activeTool === 'filters' && (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
+                {/* Server Connection Card */}
+                <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Server className="w-4 h-4 text-emerald-400" />
+                      <span className="font-bold text-gray-200">ភ្ជាប់ទៅកាន់ Server PC (Python)</span>
+                    </div>
+                    {serverStatus === 'connected' ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center gap-1">
+                        <Wifi className="w-3 h-3" /> បានភ្ជាប់
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-400 font-bold">
+                        Standalone
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-gray-400 leading-relaxed">
+                    បញ្ចូល IP របស់កុំព្យូទ័រ (ឧទាហរណ៍ <code className="text-cyan-300">http://192.168.0.xxx:3000</code>) ដើម្បី Render វីដេអូតាម Python & SQLite DB ពីចម្ងាយ៖
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={serverUrlInput}
+                      onChange={(e) => setServerUrlInput(e.target.value)}
+                      placeholder="http://192.168.0.xxx:3000"
+                      className="flex-1 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:border-emerald-400 focus:outline-none"
+                    />
+                    <button
+                      onClick={() => testServerConnection(serverUrlInput)}
+                      disabled={isCheckingServer}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-xs font-bold text-white transition flex items-center gap-1 shrink-0 cursor-pointer"
+                    >
+                      {isCheckingServer ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : 'ភ្ជាប់'}
+                    </button>
+                  </div>
+                </div>
                 <button
                   onClick={() => {
                     onOpenCompressor();
