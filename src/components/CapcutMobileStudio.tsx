@@ -153,6 +153,7 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
   const [activeTool, setActiveTool] = useState<CapcutActiveTool>('none');
   const [isClipMuted, setIsClipMuted] = useState<boolean>(false);
   const [resolutionMenuOpen, setResolutionMenuOpen] = useState<boolean>(false);
+  const [selectedQuality, setSelectedQuality] = useState<string>('AI UHD');
   const timelineScrollRef = useRef<HTMLDivElement>(null);
 
   // Server PC Connection Settings (For Remote Python Render & SQLite DB)
