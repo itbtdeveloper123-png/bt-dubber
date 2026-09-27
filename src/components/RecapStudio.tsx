@@ -8,14 +8,16 @@ import { TimelinePanel } from './TimelinePanel';
 import { VideoUploadModal } from './VideoUploadModal';
 import { WatermarkModal } from './WatermarkModal';
 import { WatermarkCleanerModal } from './WatermarkCleanerModal';
+import { BgmSeparatorModal } from './BgmSeparatorModal';
 import { LipSyncModal } from './LipSyncModal';
 import { ExportModal } from './ExportModal';
-import { VoiceCloningModal } from './VoiceCloningModal';
 import { SubtitleStyleModal } from './SubtitleStyleModal';
 import { VideoCompressorModal } from './VideoCompressorModal';
+import { ReelsThumbnailModal } from './ReelsThumbnailModal';
 import { extractBgmInstrumentalTrack } from '../utils/vocalRemover';
 import { ToastContainer, ToastMessage, ToastType } from './ToastNotification';
 import { parseTimecode } from '../utils/sequenceUtils';
+import { incrementDailyUsage } from '../utils/apiQuotaTracker';
 
 interface RecapStudioProps {
   recapData: MovieRecapResult;
@@ -51,43 +53,45 @@ interface RecapStudioProps {
 function inferSpeakerGenderClient(khmerScript: string = '', originalSummary: string = '', speakerName: string = ''): { gender: string; name: string } {
   const text = `${speakerName} ${khmerScript} ${originalSummary}`.toLowerCase();
 
-  // Grandparents / Elders
-  if (/តាចាស់|លោកតា|តា\s|តាឡៅ|តា\b|grandpa|grandfather|old man|elderly/.test(text)) {
-    return { gender: 'male_elder', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ឡៅចាវ' };
+  // 1. Grandparents / Elders (មនុស្សចាស់)
+  if (/តាចាស់|លោកតា|តា\s|តាឡៅ|តា\b|ព្រឹទ្ធាចារ្យ|grandpa|grandfather|old man|elderly/i.test(text)) {
+    return { gender: 'male_elder', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'លោកតា' };
   }
-  if (/យាយចាស់|លោកយាយ|យាយ\s|យាយ\b|grandma|grandmother|old woman/.test(text)) {
-    return { gender: 'female_elder', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'យាយចាស់' };
+  if (/យាយចាស់|លោកយាយ|យាយ\s|យាយ\b|ព្រឹទ្ធាចារ្យស្រី|grandma|grandmother|old woman/i.test(text)) {
+    return { gender: 'female_elder', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'លោកយាយ' };
   }
 
-  // Children
-  if (/ក្មេងប្រុស|កូនប្រុសតូច|ស៊ាវប៉ៅ|កូនតូចប្រុស|little boy|schoolboy|young son/.test(text)) {
-    return { gender: 'child_boy', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ស៊ាវប៉ៅ' };
+  // 2. Little Boys (👦 ក្មេងប្រុស)
+  if (/ក្មេងប្រុស|កូនប្រុសតូច|ស៊ាវប៉ៅ|ស៊ាវហួរ|កូនតូចប្រុស|ប្អូនប្រុសតូច|អាប្រុស|ចៅប្រុស|អាប៉ាវ|little boy|schoolboy|young son|little brother|boy\b|son\b/i.test(text)) {
+    return { gender: 'child_boy', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ក្មេងប្រុស' };
   }
-  if (/ក្មេងស្រី|កូនស្រីតូច|little girl|schoolgirl|young daughter/.test(text)) {
+
+  // 3. Little Girls (👧 ក្មេងស្រី)
+  if (/ក្មេងស្រី|កូនស្រីតូច|ប្អូនស្រីតូច|អាស្រី|ចៅស្រី|little girl|schoolgirl|young daughter|little sister|girl\b|daughter\b/i.test(text)) {
     return { gender: 'child_girl', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ក្មេងស្រី' };
   }
-  if (/កូនតូច|ក្មេង|កុមារ|ក្ដៅខ្លួន|baby|kid|child/.test(text)) {
-    return { gender: 'child_boy', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ស៊ាវប៉ៅ' };
+
+  // 4. Generic child words (Default boy if male-sounding, else boy child)
+  if (/កូនតូច|ក្មេង|កុមារ|ក្ដៅខ្លួន|baby|kid|child/i.test(text)) {
+    if (/ស្រី|girl|daughter/i.test(text)) {
+      return { gender: 'child_girl', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ក្មេងស្រី' };
+    }
+    return { gender: 'child_boy', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ក្មេងប្រុស' };
   }
 
-  // Female characters
-  if (/ឆេងយី|ឆេងយីង|នាង|ស្រី|ប្រពន្ធ|ម៉ាក់|ម្ដាយ|អ្នកស្រី|មីង|កញ្ញា|នារី|sister|woman|girl|mother|wife|female|lady|she|her/.test(text)) {
-    return { gender: 'female', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ឆេងយីង' };
-  }
-
-  // Villain
-  if (/តួកាច|មេបិសាច|ចោរ|ឧក្រិដ្ឋជន|villain|monster|demon|thief|criminal/.test(text)) {
+  // 5. Villains / Bad Guys (😈 តួកាច)
+  if (/តួកាច|មេបិសាច|ចោរ|ឧក្រិដ្ឋជន|មេក្រុមឧក្រិដ្ឋជន|ឃាតករ|villain|monster|demon|thief|criminal|killer|gangster/i.test(text)) {
     return { gender: 'villain', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'តួកាច' };
   }
 
-  // Police
-  if (/ប៉ូលីស|លោកប៉ូលីស|ពូប៉ូលីស|police|officer/.test(text)) {
-    return { gender: 'male', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'លោកប៉ូលីស' };
+  // 6. Female characters (👩 តួស្រី)
+  if (/ឆេងយី|ឆេងយីង|នាង|ស្រី|ប្រពន្ធ|ម៉ាក់|ម្ដាយ|អ្នកស្រី|មីង|កញ្ញា|នារី|ប្អូនស្រី|បងស្រី|sister|woman|mother|wife|female|lady|she|her/i.test(text)) {
+    return { gender: 'female', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'តួស្រី' };
   }
 
-  // Male characters
-  if (/ឡៅចាវ|ឡៅចៅ|បងប្រុស|ប្ដី|ពូ|លោក|ប៉ា|ឪពុក|កូនប្រុស|មេបញ្ជាការ|man|boy|father|husband|dad|brother|male|he|him/.test(text)) {
-    return { gender: 'male', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'ឡៅចាវ' };
+  // 7. Male characters (👨 តួប្រុស)
+  if (/ឡៅចាវ|ឡៅចៅ|ម៉ាកុស|បងប្រុស|ប្ដី|ពូ|លោក|ប៉ា|ឪពុក|កូនប្រុស|មេបញ្ជាការ|ប៉ូលីស|លោកប៉ូលីស|man|brother|father|husband|dad|male|he|him/i.test(text)) {
+    return { gender: 'male', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'តួប្រុស' };
   }
 
   return { gender: 'male', name: speakerName && speakerName !== 'អ្នកសម្រាយ' ? speakerName : 'តួប្រុស' };
@@ -125,6 +129,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 }) => {
   // Studio UI state
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
+  const [mobileActiveTab, setMobileActiveTab] = useState<'video' | 'script' | 'timeline' | 'tools'>('video');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -141,12 +146,12 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
   const dismissToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
-  
+
   // Audio & Playback state
   const [playingSegmentId, setPlayingSegmentId] = useState<number | null>(null);
   const [isPlayingAll, setIsPlayingAll] = useState<boolean>(false);
   const [activeSegmentId, setActiveSegmentId] = useState<number>(1);
-  
+
   // Advanced Audio Isolation & BGM state
   const [audioIsolationMode, setAudioIsolationMode] = useState<AudioIsolationMode>('remove_vocals_keep_bgm');
   const [bgmVolume, setBgmVolume] = useState<number>(85); // 85% rich background music
@@ -154,67 +159,22 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
   const [isExtractingBgm, setIsExtractingBgm] = useState<boolean>(false);
   const [bgmExtractProgress, setBgmExtractProgress] = useState<number>(0);
   const [bgmExtractStatus, setBgmExtractStatus] = useState<string>('');
-  
-  const [currentTimeSeconds, setCurrentTimeSeconds] = useState<number>(69);
-  const [totalDurationSeconds, setTotalDurationSeconds] = useState<number>(279);
+
+  const [currentTimeSeconds, setCurrentTimeSeconds] = useState<number>(0);
+  const [totalDurationSeconds, setTotalDurationSeconds] = useState<number>(() => {
+    return parseTimecode(recapData?.total_recap_duration_est) || 60;
+  });
 
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [isWatermarkModalOpen, setIsWatermarkModalOpen] = useState<boolean>(false);
-  const [isVoiceCloningModalOpen, setIsVoiceCloningModalOpen] = useState<boolean>(false);
   const [isCompressorModalOpen, setIsCompressorModalOpen] = useState<boolean>(false);
-  const [clonedVoices, setClonedVoices] = useState<ClonedVoiceProfile[]>([]);
-
-  useEffect(() => {
-    fetch('/api/cloned-voices')
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) setClonedVoices(data);
-      })
-      .catch(e => console.warn('Fetch cloned voices notice:', e));
-  }, []);
-
-  const handleSaveClonedVoice = async (voice: Partial<ClonedVoiceProfile>) => {
-    try {
-      const res = await fetch('/api/cloned-voices', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(voice)
-      });
-      if (res.ok) {
-        const saved: ClonedVoiceProfile = await res.json();
-        setClonedVoices(prev => {
-          const idx = prev.findIndex(v => v.id === saved.id);
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = saved;
-            return copy;
-          }
-          return [saved, ...prev];
-        });
-        showToast('success', 'បានរក្សាទុកសំឡេង Cloned ជោគជ័យ!', `ឈ្មោះ៖ ${saved.name}`);
-        return saved;
-      }
-    } catch (err: any) {
-      console.error('Save cloned voice error:', err);
-      showToast('error', 'បរាជ័យក្នុងការរក្សាទុកសំឡេង', err.message);
-    }
-  };
-
-  const handleDeleteClonedVoice = async (id: string) => {
-    try {
-      await fetch(`/api/cloned-voices/${id}`, { method: 'DELETE' });
-      setClonedVoices(prev => prev.filter(v => v.id !== id));
-      showToast('info', 'បានលុបសំឡេង Cloned រួចរាល់');
-    } catch (err: any) {
-      console.error('Delete cloned voice error:', err);
-    }
-  };
+  const [isThumbnailModalOpen, setIsThumbnailModalOpen] = useState<boolean>(false);
 
   const [voiceRolesMapping, setVoiceRolesMapping] = useState<VoiceRolesMapping>(() => {
     try {
       const saved = localStorage.getItem('khmer_dubber_voice_roles_mapping');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return { male: 'male', female: 'female', narrator: 'narrator' };
   });
 
@@ -226,88 +186,101 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setVoiceRolesMapping(mapping);
     try {
       localStorage.setItem('khmer_dubber_voice_roles_mapping', JSON.stringify(mapping));
-    } catch {}
+    } catch { }
     showToast('success', 'បានរក្សាទុកការផ្គូផ្គងសំឡេងតួអង្គជោគជ័យ!');
   };
 
   const resolveEffectiveVoice = (gender?: string): string => {
-    // 1. If user explicitly picked default Piseth & Sreymom
-    if (globalVoicePersona === 'auto_default' || globalVoicePersona === 'default') {
-      const g = (gender || 'female').toLowerCase();
-      if (g === 'male' || g === 'male_elder' || g === 'villain' || g === 'narrator') {
-        return 'edge_piseth';
-      }
-      return 'edge_sreymom';
+    const g = (gender || 'narrator').toLowerCase();
+
+    // 1. If user picked a specific single voice persona globally
+    if (globalVoicePersona && globalVoicePersona !== 'auto' && globalVoicePersona !== 'auto_default' && globalVoicePersona !== 'default') {
+      return `edge_${globalVoicePersona}`;
     }
 
-    // 2. If user picked a specific single voice (e.g. specific cloned voice or specific persona)
-    if (globalVoicePersona && globalVoicePersona !== 'auto' && globalVoicePersona !== 'auto_cloned') {
-      if (['male', 'female', 'narrator', 'male_elder', 'child', 'child_boy', 'child_girl'].includes(globalVoicePersona)) {
-        return `edge_${globalVoicePersona}`;
-      }
-      return globalVoicePersona;
+    // 2. Auto mapping by character role to native Edge-TTS voices (Piseth & Sreymom)
+    if (g === 'male' || g === 'narrator' || g === 'child_boy' || g === 'male_elder' || g === 'villain' || g === 'news_host') {
+      return `edge_${g}`;
     }
-
-    // 3. If the individual segment itself has a specific cloned or provider voice assigned
-    const g = (gender || 'female').toLowerCase();
-    if (g.startsWith('voice_') || g.startsWith('kiri_') || g.startsWith('gemini_')) {
-      return g;
+    if (g === 'female' || g === 'child_girl' || g === 'female_elder' || g === 'child' || g === 'female_lively') {
+      return `edge_${g}`;
     }
-
-    // 4. Auto Cloned Roles (✨ តាមតួអង្គ Cloned): Automatically use uploaded cloned voices
-    const clonedMale = clonedVoices.find(v => v.gender === 'male')?.id || clonedVoices[0]?.id;
-    const clonedFemale = clonedVoices.find(v => v.gender === 'female')?.id || (clonedVoices.length > 1 ? clonedVoices[clonedVoices.length - 1]?.id : clonedMale);
-
-    const effectiveMale = (voiceRolesMapping.male && (voiceRolesMapping.male.startsWith('voice_') || voiceRolesMapping.male.startsWith('kiri_') || voiceRolesMapping.male.startsWith('gemini_'))) 
-      ? voiceRolesMapping.male 
-      : (clonedMale || 'male');
-
-    const effectiveFemale = (voiceRolesMapping.female && (voiceRolesMapping.female.startsWith('voice_') || voiceRolesMapping.female.startsWith('kiri_') || voiceRolesMapping.female.startsWith('gemini_'))) 
-      ? voiceRolesMapping.female 
-      : (clonedFemale || 'female');
-
-    const effectiveNarrator = (voiceRolesMapping.narrator && (voiceRolesMapping.narrator.startsWith('voice_') || voiceRolesMapping.narrator.startsWith('kiri_') || voiceRolesMapping.narrator.startsWith('gemini_'))) 
-      ? voiceRolesMapping.narrator 
-      : (effectiveMale || effectiveFemale || 'narrator');
-
-    if (g === 'child_boy') {
-      return voiceRolesMapping.child_boy || 'child_boy';
-    }
-    if (g === 'child_girl' || g === 'child') {
-      return voiceRolesMapping.child_girl || 'child_girl';
-    }
-    if (g === 'male_elder') {
-      return voiceRolesMapping.male_elder || 'male_elder';
-    }
-    if (g === 'female_elder') {
-      return voiceRolesMapping.female_elder || 'female_elder';
-    }
-    if (g === 'villain') {
-      return voiceRolesMapping.villain || 'villain';
-    }
-    if (g === 'news_host') {
-      return 'news_host';
-    }
-    if (g === 'female_lively') {
-      return 'female_lively';
-    }
-    if (g === 'male') {
-      return effectiveMale;
-    }
-    if (g === 'female') {
-      return effectiveFemale;
-    }
-    if (g === 'narrator') {
-      return effectiveNarrator;
-    }
-    return effectiveFemale;
+    return 'edge_piseth';
   };
+
+  // ⚡ Automatic Background Audio Pre-generator & SQLite DB Cacher:
+  // Automatically synthesizes and stores every segment in RAM and Database in the background
+  // so that when the user clicks Play, it starts instantaneously (0ms) without needing to click any button!
+  useEffect(() => {
+    if (!recapData?.recap_segments || recapData.recap_segments.length === 0) return;
+
+    let isCancelled = false;
+    const segments = recapData.recap_segments;
+
+    let edgeRate = '+25%';
+    if (ttsSpeed >= 1.45) edgeRate = '+45%';
+    else if (ttsSpeed >= 1.30) edgeRate = '+36%';
+    else if (ttsSpeed >= 1.20) edgeRate = '+30%';
+    else if (ttsSpeed >= 1.10) edgeRate = '+25%';
+    else if (ttsSpeed <= 0.95) edgeRate = '+12%';
+
+    const pregenerateAllInBackground = async () => {
+      const concurrency = 3;
+      let currentIndex = 0;
+
+      const worker = async () => {
+        while (currentIndex < segments.length && !isCancelled) {
+          const seg = segments[currentIndex++];
+          if (!seg) continue;
+          const cleanText = cleanKhmerSpeech(seg.khmer_script);
+          if (!cleanText) continue;
+
+          const effectiveGender = resolveEffectiveVoice(seg.speaker_gender).toLowerCase();
+          const effectiveEmotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
+          const cacheKey = `${effectiveGender}_${effectiveEmotion}_${cleanText}`;
+
+          // If already in client RAM cache, skip
+          if (ttsAudioCacheRef.current.has(cacheKey)) continue;
+
+          const ttsUrl = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}`;
+
+          try {
+            const res = await fetch(ttsUrl);
+            if (res.ok && !isCancelled) {
+              const audioBlob = await res.blob();
+              if (audioBlob.size > 500 && !isCancelled) {
+                const objectUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(objectUrl);
+                audio.preload = 'auto';
+                audio.load();
+                ttsAudioCacheRef.current.set(cacheKey, audio);
+              }
+            }
+          } catch (e) {
+            // Silently ignore background preloader network hiccups
+          }
+        }
+      };
+
+      const workers = Array.from({ length: Math.min(concurrency, segments.length) }, () => worker());
+      await Promise.all(workers);
+    };
+
+    const timer = setTimeout(() => {
+      pregenerateAllInBackground();
+    }, 300);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [recapData?.recap_segments, globalVoicePersona, ttsSpeed]);
 
   const [watermarkConfig, setWatermarkConfig] = useState<WatermarkConfig>(() => {
     try {
       const saved = localStorage.getItem('khmer_recap_watermark_cfg');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return {
       enabled: true,
       type: 'text',
@@ -323,7 +296,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setWatermarkConfig(cfg);
     try {
       localStorage.setItem('khmer_recap_watermark_cfg', JSON.stringify(cfg));
-    } catch {}
+    } catch { }
     showToast('success', 'បានកំណត់ Watermark ជោគជ័យ!', `បង្ហាញនៅ៖ ${cfg.position}`);
   };
 
@@ -332,7 +305,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     try {
       const saved = localStorage.getItem('khmer_recap_subtitle_cfg');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return {
       enabled: true,
       preset: 'tiktok_pop',
@@ -351,9 +324,14 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setSubtitleConfig(cfg);
     try {
       localStorage.setItem('khmer_recap_subtitle_cfg', JSON.stringify(cfg));
-    } catch {}
+    } catch { }
     showToast('success', 'បានកំណត់ស្ទីល Subtitle ជោគជ័យ!', `Preset: ${cfg.preset}`);
   };
+
+  const [isBgmModalOpen, setIsBgmModalOpen] = useState<boolean>(false);
+  const [bgmColabUrl, setBgmColabUrl] = useState<string>(() => {
+    return localStorage.getItem('bgm_colab_url') || '';
+  });
 
   const [isWatermarkCleanerModalOpen, setIsWatermarkCleanerModalOpen] = useState<boolean>(false);
   const [watermarkCleanerConfig, setWatermarkCleanerConfig] = useState<WatermarkCleanerConfig>(() => {
@@ -361,7 +339,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     try {
       const saved = localStorage.getItem('khmer_recap_cleaner_cfg');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return {
       enabled: false,
       zones: [
@@ -383,7 +361,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setWatermarkCleanerConfig(cfg);
     try {
       localStorage.setItem('khmer_recap_cleaner_cfg', JSON.stringify(cfg));
-    } catch {}
+    } catch { }
     if (recapData) {
       onUpdateRecap({
         ...recapData,
@@ -391,10 +369,29 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       });
     }
     showToast(
-      'success', 
-      'បានកំណត់ AI Logo Cleaner ជោគជ័យ!', 
+      'success',
+      'បានកំណត់ AI Logo Cleaner ជោគជ័យ!',
       cfg.enabled ? `បើកដំណើរការលើ ${cfg.zones.length} តំបន់` : 'បានបិទ Logo Cleaner'
     );
+  };
+
+  const handleCleanedVideoUpdate = (cleanedUrl: string, cleanedFileName: string) => {
+    if (recapData) {
+      const updatedCleanerCfg: WatermarkCleanerConfig = {
+        ...(recapData.watermarkCleanerConfig || watermarkCleanerConfig),
+        enabled: false
+      };
+      setWatermarkCleanerConfig(updatedCleanerCfg);
+      try {
+        localStorage.setItem('khmer_recap_cleaner_cfg', JSON.stringify(updatedCleanerCfg));
+      } catch { }
+      onUpdateRecap({
+        ...recapData,
+        videoUrl: cleanedUrl,
+        videoFileName: cleanedFileName,
+        watermarkCleanerConfig: updatedCleanerCfg
+      });
+    }
   };
 
   const [isLipSyncModalOpen, setIsLipSyncModalOpen] = useState<boolean>(false);
@@ -403,7 +400,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     try {
       const saved = localStorage.getItem('wav2lip_studio_cfg');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch { }
     return {
       enabled: false,
       colabUrl: localStorage.getItem('wav2lip_colab_url') || '',
@@ -417,7 +414,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setLipSyncConfig(cfg);
     try {
       localStorage.setItem('wav2lip_studio_cfg', JSON.stringify(cfg));
-    } catch {}
+    } catch { }
     if (recapData) {
       onUpdateRecap({
         ...recapData,
@@ -517,6 +514,67 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioBufferCache = useRef<Map<string, AudioBuffer>>(new Map());
 
+  // References for live timeline tracking & speech coordination
+  const activeSegmentIdRef = useRef<number>(activeSegmentId);
+  activeSegmentIdRef.current = activeSegmentId;
+  const lastSpokenSegmentIdRef = useRef<number | null>(null);
+  const isPlayingAllRef = useRef<boolean>(false);
+  isPlayingAllRef.current = isPlayingAll;
+  const isSpeakingRef = useRef<boolean>(false);
+  const ttsAudioCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+
+  // Complete Reset & Synchronization whenever a different recap / story is selected
+  useEffect(() => {
+    setCurrentTimeSeconds(0);
+    setPlayingSegmentId(null);
+    setIsPlayingAll(false);
+    setActiveSegmentId(1);
+    lastSpokenSegmentIdRef.current = null;
+    isSpeakingRef.current = false;
+    if (ttsAudioCacheRef.current) {
+      ttsAudioCacheRef.current.clear();
+    }
+
+    if (speechSynthRef.current) {
+      try { speechSynthRef.current.cancel(); } catch (e) {}
+    }
+    if (audioPlayerRef.current) {
+      try { audioPlayerRef.current.pause(); } catch (e) {}
+    }
+    if (bgmAudioRef.current) {
+      try {
+        bgmAudioRef.current.pause();
+        bgmAudioRef.current.currentTime = 0;
+      } catch (e) {}
+    }
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.stop();
+        currentSourceRef.current.disconnect();
+      } catch (e) {}
+    }
+
+    const estDuration = parseTimecode(recapData?.total_recap_duration_est) || 0;
+    if (estDuration > 0) {
+      setTotalDurationSeconds(estDuration);
+    }
+
+    if (recapData?.watermarkCleanerConfig) {
+      setWatermarkCleanerConfig(recapData.watermarkCleanerConfig);
+    }
+    if (recapData?.lipSyncConfig) {
+      setLipSyncConfig(recapData.lipSyncConfig);
+    }
+
+    if (videoPlayerRef.current) {
+      try {
+        videoPlayerRef.current.currentTime = 0;
+        videoPlayerRef.current.pause();
+        videoPlayerRef.current.load();
+      } catch (e) {}
+    }
+  }, [(recapData as any)?.id, recapData?.movie_title, recapData?.videoUrl, recapData?.videoFileName]);
+
   const getAudioContext = () => {
     if (!audioCtxRef.current) {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -525,7 +583,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       }
     }
     if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {});
+      audioCtxRef.current.resume().catch(() => { });
     }
     return audioCtxRef.current;
   };
@@ -539,7 +597,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     const unlockAudio = () => {
       const ctx = getAudioContext();
       if (ctx && ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
+        ctx.resume().catch(() => { });
       }
       if (!audioPlayerRef.current) {
         audioPlayerRef.current = new Audio();
@@ -564,7 +622,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         try {
           currentSourceRef.current.stop();
           currentSourceRef.current.disconnect();
-        } catch (e) {}
+        } catch (e) { }
       }
     };
   }, []);
@@ -621,7 +679,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       // Apply amplified hardware acoustic gain if Web Audio API GainNode is active
       if (gainNodeRef.current && audioCtxRef.current) {
         if (audioCtxRef.current.state === 'suspended') {
-          audioCtxRef.current.resume().catch(() => {});
+          audioCtxRef.current.resume().catch(() => { });
         }
         const hardwareGain = effectiveBgmVol * 1.6; // +4.5dB hardware acoustic boost
         gainNodeRef.current.gain.setValueAtTime(hardwareGain, audioCtxRef.current.currentTime);
@@ -632,16 +690,16 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
       if (isPlayingAll || playingSegmentId !== null || (video && !video.paused)) {
         if (
-          video && 
-          !isNaN(video.currentTime) && 
+          video &&
+          !isNaN(video.currentTime) &&
           bgm.readyState >= 2 &&
           Math.abs(bgm.currentTime - video.currentTime) > 0.4
         ) {
           try {
             bgm.currentTime = video.currentTime;
-          } catch (e) {}
+          } catch (e) { }
         }
-        bgm.play().catch(() => {});
+        bgm.play().catch(() => { });
       } else {
         bgm.pause();
       }
@@ -712,7 +770,8 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
           setBgmExtractStatus(status);
         },
         recapData.videoFileName,
-        serverVideoUrl || recapData.videoUrl
+        serverVideoUrl || recapData.videoUrl,
+        bgmColabUrl
       );
 
       if (!extractResult || !extractResult.blobUrl) {
@@ -749,15 +808,6 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       setIsExtractingBgm(false);
     }
   };
-
-  // References for live timeline tracking & speech coordination
-  const activeSegmentIdRef = useRef<number>(activeSegmentId);
-  activeSegmentIdRef.current = activeSegmentId;
-  const lastSpokenSegmentIdRef = useRef<number | null>(null);
-  const isPlayingAllRef = useRef<boolean>(false);
-  isPlayingAllRef.current = isPlayingAll;
-  const isSpeakingRef = useRef<boolean>(false);
-  const ttsAudioCacheRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   // Helper to parse timestamp to high-precision seconds
   const parseTimestampToSeconds = (timeStr: string): number => {
@@ -811,7 +861,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
           const colabUrl = !isDirectEdgeVoice ? (localStorage.getItem('voxcpm2_colab_url') || '').trim() : '';
           const colabUrlParam = colabUrl ? `&colabUrl=${encodeURIComponent(colabUrl)}` : '';
           const ttsUrl = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}${voiceApiKeyParam}${colabUrlParam}`;
-          
+
           await new Promise<void>((resolve) => {
             const audio = new Audio();
             audio.preload = 'auto';
@@ -858,42 +908,42 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       }
 
       if (recapData?.recap_segments && recapData.recap_segments.length > 0 && !video.paused) {
-        // High-precision sub-second segment finder with tight tolerance
+        // High-precision sub-second segment finder
         const currentSegment = recapData.recap_segments.find((seg) => {
           const start = parseTimecode(seg.start_time);
           const end = parseTimecode(seg.end_time);
-          return rawCurrentTime >= (start - 0.05) && rawCurrentTime < (end + 0.10);
+          return rawCurrentTime >= (start - 0.10) && rawCurrentTime < (end + 0.15);
         });
 
         if (currentSegment && currentSegment.segment_id !== activeSegmentIdRef.current) {
           setActiveSegmentId(currentSegment.segment_id);
         }
 
-        // ATOMIC SENTENCE COMPLETION LOCK: Never interrupt an actively speaking sentence!
+        // Only trigger when not already actively speaking a line
         if (!isSpeakingRef.current) {
-          // Find due segment matching current playback time
+          // Find due segment matching current playback time in chronological sequence
           const pendingSegment = recapData.recap_segments.find((seg) => {
             const start = parseTimecode(seg.start_time);
             const end = parseTimecode(seg.end_time);
-            return rawCurrentTime >= (start - 0.05) && rawCurrentTime < (end + 0.20);
+            return (
+              seg.segment_id !== lastSpokenSegmentIdRef.current &&
+              rawCurrentTime >= (start - 0.10) &&
+              rawCurrentTime < (end + 0.60)
+            );
           });
 
-          if (
-            pendingSegment &&
-            pendingSegment.segment_id !== lastSpokenSegmentIdRef.current
-          ) {
+          if (pendingSegment) {
             lastSpokenSegmentIdRef.current = pendingSegment.segment_id;
             setPlayingSegmentId(pendingSegment.segment_id);
 
             const targetDurationSec = Math.max(0.5, parseTimecode(pendingSegment.end_time) - parseTimecode(pendingSegment.start_time));
+
             speakKhmerScript(
-              pendingSegment.khmer_script, 
-              pendingSegment.speaker_gender, 
+              pendingSegment.khmer_script,
+              pendingSegment.speaker_gender,
               () => {
                 setPlayingSegmentId((prev) => (prev === pendingSegment.segment_id ? null : prev));
-                // Immediately check for next due or trailing segment
-                triggerNextDueSegment();
-              }, 
+              },
               targetDurationSec,
               pendingSegment.voice_emotion || pendingSegment.voice_tone
             );
@@ -906,57 +956,12 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       }
     };
 
-    // Sequential audio speaker: seamlessly starts next segment the millisecond previous sentence finishes 100%
-    const triggerNextDueSegment = () => {
-      const vid = videoPlayerRef.current;
-      if (!vid || vid.paused) return;
-
-      const curTime = vid.currentTime;
-      const isAtEnd = vid.ended || (vid.duration > 0 && curTime >= vid.duration - 0.40);
-
-      let nextSeg: RecapSegment | undefined;
-
-      if (isAtEnd) {
-        // Video is at end: continue speaking all trailing segments in order to 100% completion
-        const nextId = (lastSpokenSegmentIdRef.current || 0) + 1;
-        nextSeg = recapData?.recap_segments?.find(s => s.segment_id === nextId);
-      } else {
-        // Video is playing: find the next segment that is due
-        nextSeg = recapData?.recap_segments?.find((s) => {
-          const start = parseTimecode(s.start_time);
-          const end = parseTimecode(s.end_time);
-          return s.segment_id > (lastSpokenSegmentIdRef.current || 0) && curTime >= (start - 0.10) && curTime < (end + 0.35);
-        });
-      }
-
-      if (nextSeg) {
-        setActiveSegmentId(nextSeg.segment_id);
-        lastSpokenSegmentIdRef.current = nextSeg.segment_id;
-        setPlayingSegmentId(nextSeg.segment_id);
-        const targetDur = Math.max(0.5, parseTimecode(nextSeg.end_time) - parseTimecode(nextSeg.start_time));
-        speakKhmerScript(
-          nextSeg.khmer_script, 
-          nextSeg.speaker_gender, 
-          () => {
-            setPlayingSegmentId((prev) => (prev === nextSeg!.segment_id ? null : prev));
-            triggerNextDueSegment();
-          }, 
-          targetDur,
-          nextSeg.voice_emotion || nextSeg.voice_tone
-        );
-      } else if (isAtEnd) {
-        setIsPlayingAll(false);
-        isPlayingAllRef.current = false;
-        setPlayingSegmentId(null);
-      }
-    };
-
     const handlePlay = () => {
       if (bgmAudioRef.current && activeBgmUrl) {
         try {
           bgmAudioRef.current.currentTime = video.currentTime;
-          bgmAudioRef.current.play().catch(() => {});
-        } catch (e) {}
+          bgmAudioRef.current.play().catch(() => { });
+        } catch (e) { }
       }
       cancelAnimationFrame(animFrameId);
       animFrameId = requestAnimationFrame(syncPrecisionLoop);
@@ -964,36 +969,31 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
     const handlePause = () => {
       cancelAnimationFrame(animFrameId);
-      // Differentiate between natural video end (allow speech to finish) vs manual user pause
-      const isAtEnd = video.ended || (video.duration > 0 && video.currentTime >= video.duration - 0.40);
-      if (!isAtEnd) {
-        if (audioPlayerRef.current) {
-          try { audioPlayerRef.current.pause(); } catch (e) {}
-        }
-        if (bgmAudioRef.current) {
-          try { bgmAudioRef.current.pause(); } catch (e) {}
-        }
-        isSpeakingRef.current = false;
-        setIsPlayingAll(false);
-        isPlayingAllRef.current = false;
-        setPlayingSegmentId(null);
-      } else {
-        // At video end: pause BGM smoothly but let character Khmer voice finish all remaining narration!
-        if (bgmAudioRef.current) {
-          try { bgmAudioRef.current.pause(); } catch (e) {}
-        }
-        triggerNextDueSegment();
+      // If video reached the end while TTS is still speaking the final sentence,
+      // allow audio to complete speaking naturally until the sentence finishes!
+      if (video.ended && isSpeakingRef.current) {
+        return;
       }
+      if (audioPlayerRef.current) {
+        try { audioPlayerRef.current.pause(); } catch (e) { }
+      }
+      if (bgmAudioRef.current) {
+        try { bgmAudioRef.current.pause(); } catch (e) { }
+      }
+      isSpeakingRef.current = false;
+      setIsPlayingAll(false);
+      isPlayingAllRef.current = false;
+      setPlayingSegmentId(null);
     };
 
     const handleSeek = () => {
       if (bgmAudioRef.current && activeBgmUrl) {
         try {
           bgmAudioRef.current.currentTime = video.currentTime;
-        } catch (e) {}
+        } catch (e) { }
       }
       if (audioPlayerRef.current) {
-        try { audioPlayerRef.current.pause(); } catch (e) {}
+        try { audioPlayerRef.current.pause(); } catch (e) { }
       }
       isSpeakingRef.current = false;
       lastSpokenSegmentIdRef.current = null;
@@ -1033,7 +1033,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
     if (videoPlayerRef.current) {
       videoPlayerRef.current.currentTime = seconds;
-      
+
       // Control video volume dynamically
       if (recapData?.bgmTrackUrl) {
         videoPlayerRef.current.muted = true;
@@ -1050,7 +1050,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         videoPlayerRef.current.volume = Math.max(0, Math.min(1, (bgmVolume / 100) * 0.20));
       }
 
-      videoPlayerRef.current.play().catch(() => {});
+      videoPlayerRef.current.play().catch(() => { });
     }
   };
 
@@ -1060,26 +1060,46 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     let cleaned = text
       // Strip foreign quotes or Chinese annotations like Orig: "..."
       .replace(/Orig\s*:\s*["'].*?["']/gi, '')
-      // Strip bracketed annotations like (Note: ...), [Sound: ...]
-      .replace(/\(.*?\)|\[.*?\]/g, '')
-      // Strip leading speaker label prefixes like "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:"
-      .replace(/^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|មេក្រុម|មេបញ្ជាការ|Marcus|Elena|[^\s:៖]{2,15})\s*[:៖-]\s*/gi, '')
-      .replace(/\bMarcus\b/gi, 'ម៉ាកុស')
-      .replace(/\bElena\b/gi, 'អេលេណា')
-      .replace(/\bSWAT\b/gi, 'ស្វាត')
-      .replace(/\bCyber\b/gi, 'សាយប័រ')
-      .replace(/\bVault\b/gi, 'វ៉ូល')
-      .replace(/\bPolice\b/gi, 'ប៉ូលីស')
-      .replace(/\bHeist\b/gi, 'ហាយស៍')
-      .replace(/\bFlash\b/gi, 'ហ្វ្លាស')
-      .replace(/\bLaser\b/gi, 'ឡាស៊ែរ')
-      .replace(/\bHackers?\b/gi, 'ហេកឃ័រ')
-      .replace(/\bTeam\b/gi, 'ក្រុម')
-      .replace(/\bMonaco\b/gi, 'ម៉ូណាកូ')
+      // Strip purely English metadata annotations like (Note: ...), [Music], [Sound]
+      .replace(/\((?:Note|Sound|Music|SFX|Audio|Scene)[^)]*\)/gi, '')
+      .replace(/\[(?:Note|Sound|Music|SFX|Audio|Scene)[^\]]*\]/gi, '')
+      // Strip only the bracket symbols so Khmer text inside brackets/parentheses is preserved 100%
+      .replace(/[()[\]{}]/g, ' ')
+      // Strip leading speaker label prefixes ONLY if followed by colon (e.g. "តួប្រុស: ", "អ្នកសម្រាយ: ")
+      .replace(/^(?:តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|ក្មេងប្រុស|ក្មេងស្រី|មេក្រុម|មេបញ្ជាការ)\s*[:៖]\s*/gi, '')
+      // Fix known AI translation hallucinations & literal wording
+      .replace(/ទទេទេវលី/g, 'ទទេស្អាត')
+      .replace(/ទទេទេវី/g, 'ទទេស្អាត')
+      .replace(/ទទេទទេ/g, 'ទទេស្អាត')
+      .replace(/សូន្យសូន្យ/g, 'រលាយបាត់សូន្យ')
+      .replace(/ស្ថានទទេ/g, 'ភាពទទេស្អាត')
+      .replace(/ទទេធូលី/g, 'រលាយក្លាយជាធូលីដី')
+      .replace(/រលាយជាស្ថាន/g, 'រលាយបាត់សូន្យ')
+      .replace(/ត្រឹមមួយភ្នែក/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក')
+      .replace(/មួយភ្នែកស្រាប់តែ/g, 'មួយប៉ប្រិចភ្នែកស្រាប់តែ')
+      .replace(/ក្នុងមួយភ្នែក/g, 'ក្នុងមួយប៉ប្រិចភ្នែក')
+      .replace(/ត្រឹមមួយប៉ប្រិច/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក')
+      .replace(/បើកស្ពាននេត្រ/g, 'បើកព្រះនេត្រ')
+      .replace(/បើកស្ថាននេត្រ/g, 'បើកព្រះនេត្រទិព្វ')
+      .replace(/ស្ពាននេត្រ/g, 'ព្រះនេត្រ')
+      .replace(/ស្ថាននេត្រ/g, 'ព្រះនេត្រ')
+      .replace(/ស្ពានភ្នែក/g, 'ភ្នែកទិព្វ')
+      .replace(/ស្ថានភ្នែក/g, 'ភ្នែកទិព្វ')
+      .replace(/ភ្នែកស្ថាន/g, 'ភ្នែកទិព្វ')
+      .replace(/នេត្រស្ថាន/g, 'ព្រះនេត្រទិព្វ')
+      .replace(/កំពុងលង់លក់ក្នុងបន្ទំ/g, 'កំពុងសោយបន្ទំយ៉ាងលង់លក់')
+      .replace(/លង់លក់ក្នុងបន្ទំ/g, 'សោយបន្ទំយ៉ាងលង់លក់')
+      .replace(/ដេកក្នុងបន្ទំ/g, 'សោយបន្ទំ')
+      .replace(/បណ្ដាអ្វីៗទាំងអស់ដែល/g, 'អ្វីៗគ្រប់យ៉ាងដែល')
+      .replace(/បណ្ដាអ្វីៗទាំងអស់/g, 'អ្វីៗគ្រប់យ៉ាង')
+      .replace(/បណ្ដាអ្វីៗគ្រប់យ៉ាង/g, 'អ្វីៗគ្រប់យ៉ាង')
+      .replace(/បណ្ដាមនុស្សទាំងអស់/g, 'មនុស្សគ្រប់គ្នា')
+      .replace(/បណ្ដាពួកយើង/g, 'ពួកយើងទាំងអស់គ្នា')
+      .replace(/បណ្ដាអ្នកទាំងអស់/g, 'អ្នកទាំងអស់គ្នា')
+      .replace(/បណ្ដុះស្ថាន/g, 'ហ្វឹកហាត់វិជ្ជាគុន')
+      .replace(/ដាំដុះក្បាច់គុន/g, 'ហ្វឹកហាត់ក្បាច់គុន')
+      .replace(/ដាំដុះថាមពល/g, 'ចម្រើនថាមពល')
       .replace(/[\r\n\t]+/g, ' ')
-      .replace(/[a-zA-Z\u4e00-\u9fa5]+/g, ' ')
-      // Allow all Khmer letters, sub-scripts, vowels, punctuation, quotes, numbers
-      .replace(/[^\u1780-\u17FF\u19E0-\u19FF0-9\s.,!?«»""''()\-—៖។ៗ]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
     return cleaned || text.trim();
@@ -1087,23 +1107,24 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
   // Khmer Text-To-Speech (TTS) with Male/Female Pitch Modulation & Dynamic Emotion Expressiveness
   const speakKhmerScript = (
-    text: string, 
-    speakerGender?: string, 
-    onEnd?: () => void, 
+    text: string,
+    speakerGender?: string,
+    onEnd?: () => void,
     targetDurationSec?: number,
-    emotion?: string
+    emotion?: string,
+    onStartPlayback?: () => void
   ) => {
     // 1. Stop any currently active audio or speech synthesis without destroying the persistent player instance
     if (audioPlayerRef.current) {
       try {
         audioPlayerRef.current.pause();
         audioPlayerRef.current.currentTime = 0;
-      } catch (e) {}
+      } catch (e) { }
     }
     if (speechSynthRef.current) {
       try {
         speechSynthRef.current.cancel();
-      } catch (e) {}
+      } catch (e) { }
     }
 
     let finished = false;
@@ -1130,7 +1151,6 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
     // Determine effective persona: either globally selected or auto-detected from scene roles mapping
     const effectiveGender = resolveEffectiveVoice(speakerGender).toLowerCase();
-
     const effectiveEmotion = (emotion || 'neutral').toLowerCase();
 
     // Stop any previously playing Web Audio buffer source
@@ -1138,7 +1158,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       try {
         currentSourceRef.current.stop();
         currentSourceRef.current.disconnect();
-      } catch (e) {}
+      } catch (e) { }
       currentSourceRef.current = null;
     }
 
@@ -1150,38 +1170,33 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     else if (ttsSpeed >= 1.10) edgeRate = '+25%';
     else if (ttsSpeed <= 0.95) edgeRate = '+12%';
 
-    const voiceApiKey = localStorage.getItem('gemini_voice_api_key') || '';
-    const voiceApiKeyParam = voiceApiKey ? `&voiceApiKey=${encodeURIComponent(voiceApiKey)}` : '';
-    const isDirectEdgeVoice = effectiveGender.startsWith('edge_') || globalVoicePersona === 'auto_default' || globalVoicePersona === 'default';
-    const colabUrl = !isDirectEdgeVoice ? (localStorage.getItem('voxcpm2_colab_url') || '').trim() : '';
-    const colabUrlParam = colabUrl ? `&colabUrl=${encodeURIComponent(colabUrl)}` : '';
-    const ttsUrl = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}${voiceApiKeyParam}${colabUrlParam}`;
+    const ttsUrl = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}`;
     const cacheKey = `${effectiveGender}_${effectiveEmotion}_${cleanText}`;
     let audio: HTMLAudioElement;
 
-    // 1. Instant 0ms retrieval from RAM Audio Cache if available
+    // 1. Retrieve or create distinct HTMLAudioElement instance for this specific sentence
     if (ttsAudioCacheRef.current.has(cacheKey)) {
       audio = ttsAudioCacheRef.current.get(cacheKey)!;
       try {
         audio.currentTime = 0;
-      } catch (e) {}
+      } catch (e) { }
     } else {
-      if (!audioPlayerRef.current) {
-        audioPlayerRef.current = new Audio();
-      }
-      audio = audioPlayerRef.current;
-      audio.src = ttsUrl;
+      audio = new Audio(ttsUrl);
       audio.preload = 'auto';
       ttsAudioCacheRef.current.set(cacheKey, audio);
     }
     audioPlayerRef.current = audio;
 
-    // 2. Dynamic Duration Alignment: If spoken audio is longer than visual action window, calibrate speed!
+    // Guarantee audio is unmuted with full volume
+    audio.muted = false;
+    audio.volume = 1.0;
+
+    // 2. Dynamic Duration Alignment: Adjust speech rate smoothly so voice fits scene pacing without truncating words!
     const applyDynamicRate = () => {
       if (targetDurationSec && targetDurationSec > 0 && audio.duration && !isNaN(audio.duration)) {
-        // Adjust playback speed so speech completes synchronously with visual action
+        // Adjust playback speed comfortably so speech completes synchronously with visual action
         const requiredSpeed = audio.duration / targetDurationSec;
-        audio.playbackRate = Math.min(1.40, Math.max(0.95, requiredSpeed));
+        audio.playbackRate = Math.min(1.35, Math.max(0.95, requiredSpeed));
       } else {
         audio.playbackRate = 1.0;
       }
@@ -1193,25 +1208,53 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       audio.onloadedmetadata = applyDynamicRate;
     }
 
-    audio.volume = 1.0;
-
     audio.onended = () => {
       handleDone();
     };
 
-    audio.onerror = (e) => {
-      console.warn('Audio playback notice:', e);
+    audio.onerror = async (e) => {
+      console.error('[TTS Audio Playback Error]:', e, audio.error);
+      let errorMsg = 'មិនអាចទាញយកសំឡេងពី Server បានទេ។';
+
+      // Perform direct fetch to inspect the exact HTTP / Server error detail
+      try {
+        const testRes = await fetch(ttsUrl);
+        if (!testRes.ok) {
+          const errJson = await testRes.json().catch(() => ({}));
+          errorMsg = errJson.error || `Server Error (Status: ${testRes.status})`;
+        }
+      } catch (netErr: any) {
+        errorMsg = `បញ្ហាបណ្តាញ Network: ${netErr.message || 'មិនអាចភ្ជាប់ទៅ Server បាន'}`;
+      }
+
+      showToast('error', '⚠️ បរាជ័យក្នុងការបន្លឺសំឡេង', errorMsg);
       handleDone();
     };
 
+    let startedTriggered = false;
+    const triggerStart = () => {
+      if (!startedTriggered) {
+        startedTriggered = true;
+        if (onStartPlayback) onStartPlayback();
+      }
+    };
+
+    audio.onplay = triggerStart;
+
     const playPromise = audio.play();
     if (playPromise !== undefined) {
-      playPromise.catch((playErr: any) => {
+      playPromise.then(() => {
+        triggerStart();
+      }).catch(async (playErr: any) => {
         if (playErr?.name === 'AbortError') {
           // Play was intentionally interrupted by pause() or skipping to another segment - silent ignore
           return;
         }
-        console.warn('Audio play() rejected:', playErr);
+        console.error('[Audio play() Rejected]:', playErr);
+        const errMsg = playErr?.message?.includes('user didn\'t interact')
+          ? 'សូមចុចលើផ្ទាំងកម្មវិធីដើម្បីអនុញ្ញាតឱ្យចាក់សំឡេង (Autoplay Policy)'
+          : `មិនអាចចាក់សំឡេងបាន៖ ${playErr?.message || 'Error'}`;
+        showToast('error', '⚠️ បរាជ័យក្នុងការចាក់សំឡេង', errMsg);
         handleDone();
       });
     }
@@ -1225,24 +1268,24 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         try {
           currentSourceRef.current.stop();
           currentSourceRef.current.disconnect();
-        } catch (e) {}
+        } catch (e) { }
         currentSourceRef.current = null;
       }
       if (audioPlayerRef.current) {
         try {
           audioPlayerRef.current.pause();
           audioPlayerRef.current.currentTime = 0;
-        } catch (e) {}
+        } catch (e) { }
       }
       if (speechSynthRef.current) {
         try {
           speechSynthRef.current.cancel();
-        } catch (e) {}
+        } catch (e) { }
       }
       if (videoPlayerRef.current) {
         try {
           videoPlayerRef.current.pause();
-        } catch (e) {}
+        } catch (e) { }
       }
       setPlayingSegmentId(null);
       setIsPlayingAll(false);
@@ -1256,58 +1299,115 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setActiveSegmentId(segment.segment_id);
     lastSpokenSegmentIdRef.current = segment.segment_id;
 
-    // Jump video to segment start time and play
+    const seconds = parseTimestampToSeconds(segment.start_time);
+    const targetDur = Math.max(0.5, parseTimecode(segment.end_time) - parseTimecode(segment.start_time));
+
+    // Jump video to segment start time immediately and prepare video playhead
     if (videoPlayerRef.current && recapData?.videoUrl) {
-      const seconds = parseTimestampToSeconds(segment.start_time);
       videoPlayerRef.current.currentTime = seconds;
-      videoPlayerRef.current.play().catch(() => {});
     }
 
-    const targetDur = Math.max(0.5, parseTimecode(segment.end_time) - parseTimecode(segment.start_time));
     speakKhmerScript(
-      segment.khmer_script, 
-      segment.speaker_gender, 
+      segment.khmer_script,
+      segment.speaker_gender,
       () => {
         setPlayingSegmentId((prev) => (prev === segment.segment_id ? null : prev));
-      }, 
+      },
       targetDur,
-      segment.voice_emotion || segment.voice_tone
+      segment.voice_emotion || segment.voice_tone,
+      () => {
+        // Frame-locked synchronization: start video exactly when audio playback actually starts
+        if (videoPlayerRef.current && recapData?.videoUrl) {
+          videoPlayerRef.current.currentTime = seconds;
+          videoPlayerRef.current.play().catch(() => { });
+        }
+      }
     );
   };
 
-  // Continuous Movie Dubbing Playback from start to finish without skipping scenes
-  const handlePlayFullNarration = () => {
-    if (isPlayingAll) {
-      isSpeakingRef.current = false;
-      isPlayingAllRef.current = false;
-      if (audioPlayerRef.current) {
-        try {
-          audioPlayerRef.current.pause();
-          audioPlayerRef.current.currentTime = 0;
-        } catch (e) {}
-      }
-      if (videoPlayerRef.current) {
-        try {
-          videoPlayerRef.current.pause();
-        } catch (e) {}
-      }
-      setIsPlayingAll(false);
-      setPlayingSegmentId(null);
-      return;
-    }
-
+  // Dedicated Sequential Full Narration Player: Guarantees 100% of all transcripts are spoken to completion
+  const playAllNarrationsSequence = async (startIdx: number = 0) => {
     if (!recapData?.recap_segments || recapData.recap_segments.length === 0) return;
 
     setIsPlayingAll(true);
     isPlayingAllRef.current = true;
-    lastSpokenSegmentIdRef.current = null;
 
-    if (videoPlayerRef.current) {
-      // Play continuously from start to finish in real-time (no jumping/skipping!)
-      if (videoPlayerRef.current.currentTime >= (videoPlayerRef.current.duration || 9999) - 0.5) {
-        videoPlayerRef.current.currentTime = 0;
+    const segments = recapData.recap_segments;
+    const initialIndex = Math.max(0, Math.min(startIdx, segments.length - 1));
+
+    for (let i = initialIndex; i < segments.length; i++) {
+      if (!isPlayingAllRef.current) break;
+
+      const seg = segments[i];
+      const cleanText = cleanKhmerSpeech(seg.khmer_script);
+      if (!cleanText) continue;
+
+      setActiveSegmentId(seg.segment_id);
+      setPlayingSegmentId(seg.segment_id);
+      lastSpokenSegmentIdRef.current = seg.segment_id;
+
+      // Auto-scroll transcript list to currently speaking segment
+      const el = document.getElementById(`dubbing-segment-${seg.segment_id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
-      videoPlayerRef.current.play().catch(() => {});
+
+      const segStartSec = parseTimestampToSeconds(seg.start_time);
+      const segEndSec = parseTimestampToSeconds(seg.end_time);
+      const targetDur = Math.max(0.5, segEndSec > segStartSec ? (segEndSec - segStartSec) : 3.0);
+
+      // Sync video & BGM to segment timestamp
+      if (videoPlayerRef.current && recapData.videoUrl) {
+        try {
+          videoPlayerRef.current.currentTime = segStartSec;
+          videoPlayerRef.current.play().catch(() => { });
+        } catch (e) { }
+      }
+      if (bgmAudioRef.current && activeBgmUrl) {
+        try {
+          bgmAudioRef.current.currentTime = segStartSec;
+          bgmAudioRef.current.play().catch(() => { });
+        } catch (e) { }
+      }
+
+      // Speak the script and wait until audio.onended fires (complete sentence spoken 100% without cutting off!)
+      await new Promise<void>((resolve) => {
+        speakKhmerScript(
+          seg.khmer_script,
+          seg.speaker_gender,
+          () => {
+            resolve();
+          },
+          targetDur,
+          seg.voice_emotion || seg.voice_tone
+        );
+      });
+
+      if (!isPlayingAllRef.current) break;
+
+      // Brief natural pause between dialogue segments (200ms)
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (isPlayingAllRef.current) {
+      setIsPlayingAll(false);
+      isPlayingAllRef.current = false;
+      setPlayingSegmentId(null);
+    }
+  };
+
+  // Continuous Movie Dubbing Playback from start to finish
+  const handlePlayFullNarration = () => {
+    if (!videoPlayerRef.current) return;
+
+    if (!videoPlayerRef.current.paused) {
+      videoPlayerRef.current.pause();
+    } else {
+      if (audioIsolationMode === 'mute_all_original') {
+        videoPlayerRef.current.muted = true;
+      }
+      lastSpokenSegmentIdRef.current = null;
+      videoPlayerRef.current.play().catch(() => { });
     }
   };
 
@@ -1329,8 +1429,8 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     }));
     onUpdateRecap({ ...recapData, recap_segments: updated });
     showToast(
-      'info', 
-      '🎭 បានប្តូរអារម្មណ៍គ្រប់ឈុត', 
+      'info',
+      '🎭 បានប្តូរអារម្មណ៍គ្រប់ឈុត',
       `បានកំណត់អារម្មណ៍ "${emotion === 'neutral' ? 'ធម្មតា (ស្មើ)' : emotion}" គ្រប់ ${updated.length} ឈុតទាំងអស់`
     );
   };
@@ -1381,71 +1481,79 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         headers['x-gemini-api-key'] = apiKey;
       }
 
-      const res = await fetch('/api/recap/auto-detect-speakers', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          segments: recapData.recap_segments,
-          movieTitle: recapData.movie_title,
-          translationMode: translationMode,
-          customApiKey: apiKey
-        })
-      });
+      let detectedMap = new Map<number, { speaker_gender: string; speaker_name: string }>();
 
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || 'Failed to detect speakers');
-      }
-
-      const data = await res.json();
-      if (data.detected_segments && Array.isArray(data.detected_segments)) {
-        const detectedMap = new Map<number, { speaker_gender: string; speaker_name: string }>();
-        for (const d of data.detected_segments) {
-          detectedMap.set(d.segment_id, {
-            speaker_gender: d.speaker_gender,
-            speaker_name: d.speaker_name
-          });
-        }
-
-        const updatedSegments = recapData.recap_segments.map(seg => {
-          const match = detectedMap.get(seg.segment_id);
-          if (match) {
-            return {
-              ...seg,
-              speaker_gender: match.speaker_gender || seg.speaker_gender,
-              speaker_name: match.speaker_name || seg.speaker_name
-            };
-          }
-          return seg;
+      try {
+        const res = await fetch('/api/recap/auto-detect-speakers', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            segments: recapData.recap_segments,
+            movieTitle: recapData.movie_title,
+            translationMode: translationMode,
+            customApiKey: apiKey
+          })
         });
 
-        const updatedRecap = {
-          ...recapData,
-          recap_segments: updatedSegments
-        };
-
-        onUpdateRecap(updatedRecap);
-
-        // Clear audio cache so newly tagged voices generate fresh audio immediately
-        ttsAudioCacheRef.current.clear();
-
-        // Auto save to database
-        try {
-          await fetch('/api/db/recaps', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedRecap)
-          });
-        } catch (dbErr) {
-          console.warn('Auto-save detected speakers error:', dbErr);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.detected_segments && Array.isArray(data.detected_segments)) {
+            for (const d of data.detected_segments) {
+              detectedMap.set(d.segment_id, {
+                speaker_gender: d.speaker_gender,
+                speaker_name: d.speaker_name
+              });
+            }
+          }
         }
-
-        showToast(
-          'success', 
-          '🎉 បាន Detect ភេទ & តួអង្គជោគជ័យ!', 
-          `បានកំណត់តួអង្គ (ប្រុស ស្រី ក្មេង ចាស់) លើ ${updatedSegments.length} ឈុតរួចរាល់។`
-        );
+      } catch (fetchErr) {
+        console.warn('Server auto-detect speakers notice, using local intelligent heuristics:', fetchErr);
       }
+
+      // If server didn't map all segments, fill in with high-precision client inference
+      const updatedSegments = recapData.recap_segments.map(seg => {
+        const serverMatch = detectedMap.get(seg.segment_id);
+        if (serverMatch && serverMatch.speaker_gender && serverMatch.speaker_gender !== 'child') {
+          return {
+            ...seg,
+            speaker_gender: serverMatch.speaker_gender,
+            speaker_name: serverMatch.speaker_name || seg.speaker_name || 'តួអង្គ'
+          };
+        }
+        const clientInferred = inferSpeakerGenderClient(seg.khmer_script, seg.original_summary, seg.speaker_name);
+        return {
+          ...seg,
+          speaker_gender: clientInferred.gender,
+          speaker_name: seg.speaker_name && seg.speaker_name !== 'អ្នកសម្រាយ' ? seg.speaker_name : clientInferred.name
+        };
+      });
+
+      const updatedRecap = {
+        ...recapData,
+        recap_segments: updatedSegments
+      };
+
+      onUpdateRecap(updatedRecap);
+
+      // Clear audio cache so newly tagged voices generate fresh audio immediately
+      ttsAudioCacheRef.current.clear();
+
+      // Auto save to database
+      try {
+        await fetch('/api/db/recaps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedRecap)
+        });
+      } catch (dbErr) {
+        console.warn('Auto-save detected speakers error:', dbErr);
+      }
+
+      showToast(
+        'success',
+        '🎉 បានបែងចែកតួអង្គស្វ័យប្រវត្តិជោគជ័យ!',
+        `បានចាត់តាំងសំឡេង (ក្មេងប្រុស ក្មេងស្រី ប្រុស ស្រី ចាស់ កាច) លើ ${updatedSegments.length} ឈុតរួចរាល់។`
+      );
     } catch (err: any) {
       console.error('Auto detect speakers error:', err);
       showToast('error', 'បរាជ័យក្នុងការ Detect តួអង្គ', err.message);
@@ -1464,10 +1572,15 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     showToast('info', 'Gemini AI កំពុងពិនិត្យស្គ្រីប...', 'កំពុងពិនិត្យឈ្មោះតួអង្គ អក្ខរាវិរុទ្ធ និងសាច់រឿង...');
 
     try {
-      const apiKey = localStorage.getItem('khmer_dubber_custom_api_key') || undefined;
+      const apiKey = localStorage.getItem('gemini_api_key') || localStorage.getItem('khmer_dubber_custom_api_key') || undefined;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) {
+        headers['x-gemini-api-key'] = apiKey;
+      }
+
       const res = await fetch('/api/recap/proofread-script', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           segments: recapData.recap_segments,
           movieTitle: recapData.movie_title,
@@ -1487,6 +1600,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
           ...recapData,
           recap_segments: data.corrected_segments
         });
+        incrementDailyUsage('translation', 1);
         showToast('success', `✨ AI បានកែសម្រួលស្គ្រីបជោគជ័យ! (${data.changes_count || 0} កន្លែង)`, data.correction_summary || 'ឈ្មោះតួអង្គ និងអត្ថន័យត្រូវបានកែសម្រួលឱ្យស្របតាមសាច់រឿង។');
       }
     } catch (err: any) {
@@ -1502,7 +1616,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     setRefiningSegmentId(segment.segment_id);
 
     try {
-      const apiKey = localStorage.getItem('khmer_dubber_custom_api_key') || undefined;
+      const apiKey = localStorage.getItem('gemini_api_key') || localStorage.getItem('khmer_dubber_custom_api_key') || undefined;
       const idx = recapData.recap_segments.findIndex(s => s.segment_id === segment.segment_id);
       const prevSeg = idx > 0 ? recapData.recap_segments[idx - 1] : undefined;
       const nextSeg = idx < recapData.recap_segments.length - 1 ? recapData.recap_segments[idx + 1] : undefined;
@@ -1532,6 +1646,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
       const data = await res.json();
       if (data.refined_script) {
         handleSegmentChange(segment.segment_id, 'khmer_script', data.refined_script);
+        incrementDailyUsage('translation', 1);
         showToast('success', '✨ បានកែសម្រួលប្រយោគនេះរួចរាល់!');
       }
     } catch (err: any) {
@@ -1578,68 +1693,75 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     else if (ttsSpeed <= 0.95) edgeRate = '+12%';
 
     let successCount = 0;
+    let completedCount = 0;
 
     try {
-      // Process segments sequentially in Real-Time with forceRefresh=true so it synthesizes fresh audio
-      for (let i = 0; i < total; i++) {
-        const seg = recapData.recap_segments[i];
-        const cleanText = cleanKhmerSpeech(seg.khmer_script);
+      // Concurrency limit: 2 parallel requests for GPU VoxCPM2, 4 for EdgeTTS
+      const isDirectEdgeVoiceGlobal = globalVoicePersona === 'auto_default' || globalVoicePersona === 'default' || globalVoicePersona?.startsWith('edge_');
+      const concurrency = isDirectEdgeVoiceGlobal ? 4 : 2;
+      let currentIndex = 0;
 
-        if (!cleanText) {
-          setBatchProgress({ current: i + 1, total });
-          continue;
-        }
+      const worker = async () => {
+        while (currentIndex < total) {
+          const i = currentIndex++;
+          const seg = recapData.recap_segments[i];
+          const cleanText = cleanKhmerSpeech(seg.khmer_script);
 
-        const effectiveGender = resolveEffectiveVoice(seg.speaker_gender).toLowerCase();
-        const effectiveEmotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
-        const cacheKey = `${effectiveGender}_${effectiveEmotion}_${cleanText}`;
-
-        const isDirectEdgeVoice = effectiveGender.startsWith('edge_') || globalVoicePersona === 'auto_default' || globalVoicePersona === 'default';
-        const colabUrl = !isDirectEdgeVoice ? (localStorage.getItem('voxcpm2_colab_url') || '').trim() : '';
-        const colabUrlParam = colabUrl ? `&colabUrl=${encodeURIComponent(colabUrl)}` : '';
-        const voiceApiKey = localStorage.getItem('gemini_voice_api_key') || '';
-        const voiceApiKeyParam = voiceApiKey ? `&voiceApiKey=${encodeURIComponent(voiceApiKey)}` : '';
-
-        // Use a unique timestamp URL so browser doesn't serve stale HTTP cache
-        const freshTs = `${Date.now()}_${i}`;
-        const ttsUrlFresh = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}${voiceApiKeyParam}${colabUrlParam}&forceRefresh=true&_ts=${freshTs}`;
-        // Canonical URL (no timestamp) used for playback - points to fresh server-side cache
-        const ttsUrl = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}${voiceApiKeyParam}${colabUrlParam}`;
-
-        try {
-          // Fetch with unique timestamp URL — server bypasses DB cache, generates fresh VoxCPM2 audio
-          const response = await fetch(ttsUrlFresh);
-          if (response.ok) {
-            // Get the fresh audio bytes from the response
-            const audioBlob = await response.blob();
-            const objectUrl = URL.createObjectURL(audioBlob);
-
-            // Remove any stale cached entry
-            const stale = ttsAudioCacheRef.current.get(cacheKey);
-            if (stale) {
-              try { stale.pause(); stale.src = ''; } catch (_) {}
-            }
-            ttsAudioCacheRef.current.delete(cacheKey);
-
-            // Create brand-new Audio element with the fresh blob URL
-            const audio = new Audio();
-            audio.preload = 'auto';
-            audio.src = objectUrl;  // Blob URL — browser always plays fresh audio, no HTTP cache
-            audio.load();
-            ttsAudioCacheRef.current.set(cacheKey, audio);
-            successCount++;
+          if (!cleanText) {
+            completedCount++;
+            setBatchProgress({ current: completedCount, total });
+            continue;
           }
-        } catch (segErr) {
-          console.warn(`[Batch Generation Segment ${seg.segment_id} Notice]:`, segErr);
-        }
 
-        // Live Real-Time state update for UI progress bar & badge
-        setBatchProgress({ current: i + 1, total });
-      }
+          const effectiveGender = resolveEffectiveVoice(seg.speaker_gender).toLowerCase();
+          const effectiveEmotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
+          const cacheKey = `${effectiveGender}_${effectiveEmotion}_${cleanText}`;
+
+          // Use a unique timestamp URL so browser doesn't serve stale HTTP cache
+          const freshTs = `${Date.now()}_${i}`;
+          const ttsUrlFresh = `/api/tts?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(effectiveGender)}&gender=${encodeURIComponent(effectiveGender)}&rate=${encodeURIComponent(edgeRate)}&emotion=${encodeURIComponent(effectiveEmotion)}&forceRefresh=true&_ts=${freshTs}`;
+
+          try {
+            const response = await fetch(ttsUrlFresh);
+            if (response.ok) {
+              const contentType = response.headers.get('content-type') || '';
+              if (!contentType.includes('json')) {
+                const audioBlob = await response.blob();
+                if (audioBlob.size > 500) {
+                  const objectUrl = URL.createObjectURL(audioBlob);
+
+                  // Remove any stale cached entry
+                  const stale = ttsAudioCacheRef.current.get(cacheKey);
+                  if (stale) {
+                    try { stale.pause(); stale.src = ''; } catch (_) { }
+                  }
+                  ttsAudioCacheRef.current.delete(cacheKey);
+
+                  // Create brand-new Audio element with the fresh blob URL
+                  const audio = new Audio();
+                  audio.preload = 'auto';
+                  audio.src = objectUrl;
+                  audio.load();
+                  ttsAudioCacheRef.current.set(cacheKey, audio);
+                  successCount++;
+                }
+              }
+            }
+          } catch (segErr) {
+            console.warn(`[Batch Generation Segment ${seg.segment_id} Notice]:`, segErr);
+          }
+
+          completedCount++;
+          setBatchProgress({ current: Math.min(total, completedCount), total });
+        }
+      };
+
+      const workers = Array.from({ length: Math.min(concurrency, total) }, () => worker());
+      await Promise.all(workers);
 
       showToast(
-        'success', 
-        '🎉 បានបង្កើតសំឡេងទាំងអស់ជោគជ័យ!', 
+        'success',
+        '🎉 បានបង្កើតសំឡេងទាំងអស់ជោគជ័យ!',
         `បង្កើតបាន៖ ${successCount}/${total} ឈុត (ចាក់បានភ្លាមៗ 0ms គ្មានកន្ត្រាក់)`
       );
     } catch (err: any) {
@@ -1694,10 +1816,10 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
     if (!recapData || !savedRecaps || savedRecaps.length < 2) return null;
 
     // Option C: group by folderId/folderName first, then fall back to seriesTitle
-    const currentFolderId   = recapData.folderId;
+    const currentFolderId = recapData.folderId;
     const currentFolderName = recapData.folderName;
-    const currentSeries     = recapData.seriesTitle;
-    const currentId         = (recapData as any).id;
+    const currentSeries = recapData.seriesTitle;
+    const currentId = (recapData as any).id;
 
     const siblings = savedRecaps.filter((r) => {
       if (r === recapData) return false;
@@ -1757,7 +1879,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
 
   return (
     <div className="w-full bg-[#F3F4F6] min-h-screen text-gray-900 flex flex-col font-sans select-none">
-      
+
       {/* 1. Studio Header */}
       <StudioHeader
         movieTitle={recapData?.movie_title}
@@ -1773,118 +1895,183 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         onOpenWatermarkCleaner={() => setIsWatermarkCleanerModalOpen(true)}
         onOpenLipSync={() => setIsLipSyncModalOpen(true)}
         onOpenCompressor={() => setIsCompressorModalOpen(true)}
+        onOpenBgmModal={() => setIsBgmModalOpen(true)}
         onOpenUpdateModal={onOpenUpdateModal}
+        onOpenThumbnailModal={() => setIsThumbnailModalOpen(true)}
         onToast={showToast}
         saveStatus={saveStatus}
       />
 
       {/* 2. Main Studio Body Container */}
       <div className="flex-1 flex overflow-hidden">
-        
+
         {/* Far-Left Vertical Tools Dock */}
         <StudioSidebar
           activeMode={activeMode}
-          onSwitchMode={onSwitchMode || (() => {})}
+          onSwitchMode={onSwitchMode || (() => { })}
           onOpenUpload={() => setIsUploadModalOpen(true)}
           onOpenTikTokModal={onOpenTikTokModal}
           onOpenApiKeyModal={onOpenApiKeyModal}
-          onOpenVoiceCloningModal={() => setIsVoiceCloningModalOpen(true)}
           hasCustomApiKey={hasCustomApiKey}
           onInsertToSequence={onInsertToSequence}
           onInsertFolderToSequence={onInsertFolderToSequence}
           savedRecaps={savedRecaps}
           currentRecap={recapData}
-          onSelectRecap={onSelectRecap || (() => {})}
+          onSelectRecap={onSelectRecap || (() => { })}
           onOpenSavedModal={onOpenSaved}
         />
 
         {/* Studio Canvas Area (Video Monitor + Dubbing Panel) */}
         <div className="flex-1 flex flex-col p-2 sm:p-2.5 lg:p-3 xl:p-4 gap-2 lg:gap-2.5 xl:gap-3 overflow-y-auto">
-          
-          {/* Top Row: Video Monitor (Left) & Dubbing Panel (Right) */}
-          <div className="flex flex-col lg:flex-row gap-2 lg:gap-2.5 xl:gap-3 items-stretch">
-            <VideoMonitor
-              videoUrl={recapData?.videoUrl}
-              videoFileName={recapData?.videoFileName}
-              rawFile={recapData?.rawFile}
-              videoRef={videoPlayerRef}
-              aspectRatio={aspectRatio}
-              audioIsolationMode={audioIsolationMode}
-              onChangeAudioIsolationMode={setAudioIsolationMode}
-              bgmVolume={bgmVolume}
-              onChangeBgmVolume={setBgmVolume}
-              selectedBgmId={selectedBgmId}
-              onChangeSelectedBgmId={setSelectedBgmId}
-              onFileUpload={onFileUpload}
-              onUpdateVideoUrl={(newUrl, newFileName, convertedFile) => {
-                if (!recapData) return;
-                onUpdateRecap({
-                  ...recapData,
-                  videoUrl: newUrl,
-                  videoFileName: newFileName,
-                  rawFile: convertedFile || recapData.rawFile
-                });
-              }}
-              onSelectSampleVideo={handleSelectSampleVideo}
-              isLoading={isLoading}
-              isProcessingFile={isProcessingFile}
-              currentTimeStr={formatSecToMMSS(currentTimeSeconds)}
-              totalDurationStr={formatSecToMMSS(totalDurationSeconds)}
-              isPlaying={isPlayingAll || playingSegmentId !== null}
-              onTogglePlay={handlePlayFullNarration}
-              onExtractBgm={handleExtractBgm}
-              onCancelExtractBgm={() => setIsExtractingBgm(false)}
-              isExtractingBgm={isExtractingBgm}
-              bgmExtractProgress={bgmExtractProgress}
-              bgmExtractStatus={bgmExtractStatus}
-              hasBgmTrack={!!recapData?.bgmTrackUrl}
-              onAutoDetectAspectRatio={setAspectRatio}
-              watermark={watermarkConfig}
-              watermarkCleanerConfig={watermarkCleanerConfig}
-              subtitleConfig={subtitleConfig}
-              currentSegment={currentActiveSegment}
-              currentTimeSec={currentTimeSeconds}
-            />
 
-            <DubbingPanel
-              recapData={recapData}
-              activeSegmentId={activeSegmentId}
-              playingSegmentId={playingSegmentId}
-              isPlayingAll={isPlayingAll}
-              ttsSpeed={ttsSpeed}
-              onSpeedChange={onChangeTtsSpeed || (() => {})}
-              globalVoicePersona={globalVoicePersona}
-              onChangeGlobalVoicePersona={onChangeGlobalVoicePersona || (() => {})}
-              clonedVoices={clonedVoices}
-              onOpenVoiceCloningModal={() => setIsVoiceCloningModalOpen(true)}
-              onPlaySegment={handlePlaySegment}
-              onPlayFullNarration={handlePlayFullNarration}
-              onTestVoice={() => speakKhmerScript("សួស្តី! នេះគឺជាការសាកល្បងសំឡេងបកប្រែជាភាសាខ្មែរ។", globalVoicePersona !== 'auto' ? globalVoicePersona : "male")}
-              onSegmentChange={handleSegmentChange}
-              onSetAllSegmentsEmotion={handleSetAllSegmentsEmotion}
-              onAddSegment={handleAddSegment}
-              onDeleteSegment={handleDeleteSegment}
-              onRegenerateAll={onRegenerateAll}
-              onInsertToSequence={onInsertToSequence}
-              onGenerateHook={handleGenerateHook}
-              onProofreadScript={handleProofreadScript}
-              isProofreadingScript={isProofreadingScript}
-              onAutoDetectSpeakers={handleAutoDetectSpeakers}
-              isAutoDetectingSpeakers={isAutoDetectingSpeakers}
-              onRefineSingleSegment={handleRefineSingleSegment}
-              refiningSegmentId={refiningSegmentId}
-              translationMode={translationMode}
-              onChangeTranslationMode={onChangeTranslationMode}
-              isLoading={isLoading}
-              onBatchGenerateAllAudio={handleBatchGenerateAllAudio}
-              isBatchGeneratingAudio={isBatchGeneratingAudio}
-              batchProgress={batchProgress}
-            />
+          {/* Mobile CapCut-Style Tab Switcher (md:hidden) */}
+          <div className="flex md:hidden items-center justify-between bg-white border border-gray-200/90 rounded-2xl p-1 shadow-2xs gap-1 shrink-0 font-khmer text-xs">
+            <button
+              onClick={() => setMobileActiveTab('video')}
+              className={`flex-1 py-2 px-2 rounded-xl font-bold flex items-center justify-center gap-1 transition active:scale-95 cursor-pointer ${
+                mobileActiveTab === 'video'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <span>🎬</span>
+              <span>វីដេអូ</span>
+            </button>
+            <button
+              onClick={() => setMobileActiveTab('script')}
+              className={`flex-1 py-2 px-2 rounded-xl font-bold flex items-center justify-center gap-1 transition active:scale-95 cursor-pointer ${
+                mobileActiveTab === 'script'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <span>📝</span>
+              <span>ស្គ្រីប</span>
+              {recapData?.recap_segments?.length ? (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                  mobileActiveTab === 'script' ? 'bg-blue-800 text-white' : 'bg-gray-200 text-gray-700'
+                }`}>
+                  {recapData.recap_segments.length}
+                </span>
+              ) : null}
+            </button>
+            <button
+              onClick={() => setMobileActiveTab('timeline')}
+              className={`flex-1 py-2 px-2 rounded-xl font-bold flex items-center justify-center gap-1 transition active:scale-95 cursor-pointer ${
+                mobileActiveTab === 'timeline'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <span>⏱️</span>
+              <span>Timeline</span>
+            </button>
+            <button
+              onClick={() => setMobileActiveTab('tools')}
+              className={`flex-1 py-2 px-2 rounded-xl font-bold flex items-center justify-center gap-1 transition active:scale-95 cursor-pointer ${
+                mobileActiveTab === 'tools'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              <span>⚡</span>
+              <span>ឧបករណ៍</span>
+            </button>
+          </div>
+
+          {/* Top Row: Video Monitor (Left) & Dubbing Panel (Right) */}
+          <div className={`flex-col lg:flex-row gap-2 lg:gap-2.5 xl:gap-3 items-stretch ${
+            mobileActiveTab === 'video' || mobileActiveTab === 'script' ? 'flex' : 'hidden md:flex'
+          }`}>
+            <div className={`${mobileActiveTab === 'video' ? 'block' : 'hidden md:block'} flex-1 min-w-0`}>
+              <VideoMonitor
+                videoUrl={recapData?.videoUrl}
+                videoFileName={recapData?.videoFileName}
+                rawFile={recapData?.rawFile}
+                videoRef={videoPlayerRef}
+                aspectRatio={aspectRatio}
+                onOpenThumbnailModal={() => setIsThumbnailModalOpen(true)}
+                audioIsolationMode={audioIsolationMode}
+                onChangeAudioIsolationMode={setAudioIsolationMode}
+                bgmVolume={bgmVolume}
+                onChangeBgmVolume={setBgmVolume}
+                selectedBgmId={selectedBgmId}
+                onChangeSelectedBgmId={setSelectedBgmId}
+                onFileUpload={onFileUpload}
+                onUpdateVideoUrl={(newUrl, newFileName, convertedFile) => {
+                  if (!recapData) return;
+                  onUpdateRecap({
+                    ...recapData,
+                    videoUrl: newUrl,
+                    videoFileName: newFileName,
+                    rawFile: convertedFile || recapData.rawFile
+                  });
+                }}
+                onSelectSampleVideo={handleSelectSampleVideo}
+                isLoading={isLoading}
+                isProcessingFile={isProcessingFile}
+                currentTimeStr={formatSecToMMSS(currentTimeSeconds)}
+                totalDurationStr={formatSecToMMSS(totalDurationSeconds)}
+                isPlaying={isPlayingAll || playingSegmentId !== null}
+                onTogglePlay={handlePlayFullNarration}
+                onExtractBgm={handleExtractBgm}
+                onCancelExtractBgm={() => setIsExtractingBgm(false)}
+                isExtractingBgm={isExtractingBgm}
+                bgmExtractProgress={bgmExtractProgress}
+                bgmExtractStatus={bgmExtractStatus}
+                hasBgmTrack={!!recapData?.bgmTrackUrl}
+                onAutoDetectAspectRatio={setAspectRatio}
+                watermark={watermarkConfig}
+                watermarkCleanerConfig={watermarkCleanerConfig}
+                subtitleConfig={subtitleConfig}
+                currentSegment={currentActiveSegment}
+                currentTimeSec={currentTimeSeconds}
+                onOpenWatermarkCleaner={() => setIsWatermarkCleanerModalOpen(true)}
+                onOpenBgmLinkModal={() => setIsBgmModalOpen(true)}
+                bgmColabUrl={bgmColabUrl}
+              />
+            </div>
+
+            <div className={`${mobileActiveTab === 'script' ? 'block' : 'hidden md:block'} flex-1 min-w-0`}>
+              <DubbingPanel
+                recapData={recapData}
+                activeSegmentId={activeSegmentId}
+                playingSegmentId={playingSegmentId}
+                isPlayingAll={isPlayingAll}
+                ttsSpeed={ttsSpeed}
+                onSpeedChange={onChangeTtsSpeed || (() => { })}
+                globalVoicePersona={globalVoicePersona}
+                onChangeGlobalVoicePersona={onChangeGlobalVoicePersona || (() => { })}
+                onPlaySegment={handlePlaySegment}
+                onPlayFullNarration={handlePlayFullNarration}
+                onTestVoice={() => speakKhmerScript("សួស្តី! នេះគឺជាការសាកល្បងសំឡេងបកប្រែជាភាសាខ្មែរ។", globalVoicePersona !== 'auto' ? globalVoicePersona : "male")}
+                onSegmentChange={handleSegmentChange}
+                onSetAllSegmentsEmotion={handleSetAllSegmentsEmotion}
+                onAddSegment={handleAddSegment}
+                onDeleteSegment={handleDeleteSegment}
+                onRegenerateAll={onRegenerateAll}
+                onInsertToSequence={onInsertToSequence}
+                onGenerateHook={handleGenerateHook}
+                onProofreadScript={handleProofreadScript}
+                isProofreadingScript={isProofreadingScript}
+                onAutoDetectSpeakers={handleAutoDetectSpeakers}
+                isAutoDetectingSpeakers={isAutoDetectingSpeakers}
+                onRefineSingleSegment={handleRefineSingleSegment}
+                refiningSegmentId={refiningSegmentId}
+                translationMode={translationMode}
+                onChangeTranslationMode={onChangeTranslationMode}
+                isLoading={isLoading}
+                onBatchGenerateAllAudio={handleBatchGenerateAllAudio}
+                isBatchGeneratingAudio={isBatchGeneratingAudio}
+                batchProgress={batchProgress}
+              />
+            </div>
           </div>
 
           {/* ── Next Episode Quick Navigation Banner ─────────────────────── */}
           {nextEpisodeRecap && onSelectRecap && (
             <div
+              className={`${mobileActiveTab === 'video' || mobileActiveTab === 'tools' ? 'block' : 'hidden md:block'}`}
               style={{
                 background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 40%, #4338ca 100%)',
                 borderRadius: '12px',
@@ -1909,8 +2096,8 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="5 3 19 12 5 21 5 3" fill="#a5b4fc" stroke="none"/>
-                    <line x1="19" y1="3" x2="19" y2="21"/>
+                    <polygon points="5 3 19 12 5 21 5 3" fill="#a5b4fc" stroke="none" />
+                    <line x1="19" y1="3" x2="19" y2="21" />
                   </svg>
                 </div>
                 <div style={{ minWidth: 0 }}>
@@ -1954,18 +2141,10 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
                   boxShadow: '0 2px 12px rgba(99,102,241,0.5)',
                   transition: 'all 0.18s ease',
                 }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.05)';
-                  (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 4px 20px rgba(99,102,241,0.7)';
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)';
-                  (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 2px 12px rgba(99,102,241,0.5)';
-                }}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="5 3 19 12 5 21 5 3" fill="white" stroke="none"/>
-                  <line x1="19" y1="3" x2="19" y2="21"/>
+                  <polygon points="5 3 19 12 5 21 5 3" fill="white" stroke="none" />
+                  <line x1="19" y1="3" x2="19" y2="21" />
                 </svg>
                 មើលភាគបន្ទាប់
               </button>
@@ -1973,36 +2152,205 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
           )}
 
           {/* Bottom Panel: Full Multi-Track NLE Timeline */}
-          <TimelinePanel
-            recapData={recapData}
-            videoRef={videoPlayerRef}
-            activeSegmentId={activeSegmentId}
-            setActiveSegmentId={setActiveSegmentId}
-            isPlaying={isPlayingAll}
-            onTogglePlay={handlePlayFullNarration}
-            currentTimeSeconds={currentTimeSeconds}
-            totalDurationSeconds={totalDurationSeconds}
-            onSeekToSeconds={(sec) => {
-              setCurrentTimeSeconds(sec);
-              lastSpokenSegmentIdRef.current = null;
-              if (videoPlayerRef.current) {
-                videoPlayerRef.current.currentTime = sec;
-              }
-              if (bgmAudioRef.current && recapData?.bgmTrackUrl) {
-                bgmAudioRef.current.currentTime = sec;
-              }
-            }}
-            audioIsolationMode={audioIsolationMode}
-            bgmVolume={bgmVolume}
-            onChangeBgmVolume={setBgmVolume}
-            onExtractBgm={handleExtractBgm}
-            isExtractingBgm={isExtractingBgm}
-            onSegmentChange={handleSegmentChange}
-            clonedVoices={clonedVoices}
-            voiceRolesMapping={voiceRolesMapping}
-            globalVoicePersona={globalVoicePersona}
-            playingSegmentId={playingSegmentId}
-          />
+          <div className={`${mobileActiveTab === 'timeline' ? 'block' : 'hidden md:block'} w-full`}>
+            <TimelinePanel
+              recapData={recapData}
+              videoRef={videoPlayerRef}
+              activeSegmentId={activeSegmentId}
+              setActiveSegmentId={setActiveSegmentId}
+              isPlaying={isPlayingAll}
+              onTogglePlay={handlePlayFullNarration}
+              currentTimeSeconds={currentTimeSeconds}
+              totalDurationSeconds={totalDurationSeconds}
+              onSeekToSeconds={(sec) => {
+                setCurrentTimeSeconds(sec);
+                lastSpokenSegmentIdRef.current = null;
+                if (videoPlayerRef.current) {
+                  videoPlayerRef.current.currentTime = sec;
+                }
+                if (bgmAudioRef.current && recapData?.bgmTrackUrl) {
+                  bgmAudioRef.current.currentTime = sec;
+                }
+              }}
+              audioIsolationMode={audioIsolationMode}
+              bgmVolume={bgmVolume}
+              onChangeBgmVolume={setBgmVolume}
+              onExtractBgm={handleExtractBgm}
+              isExtractingBgm={isExtractingBgm}
+              onSegmentChange={handleSegmentChange}
+              globalVoicePersona={globalVoicePersona}
+              playingSegmentId={playingSegmentId}
+            />
+          </div>
+
+          {/* Dedicated Mobile Tools & Studio Dashboard (md:hidden when tools tab active) */}
+          {mobileActiveTab === 'tools' && (
+            <div className="flex md:hidden flex-col gap-3 font-khmer animate-fadeIn pb-safe">
+              
+              {/* 1. Media Upload & Sources Card */}
+              <div className="bg-white rounded-2xl p-3 border border-gray-200/90 shadow-2xs space-y-2">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  📁 ប្រភពវីដេអូ & មេឌា
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setIsUploadModalOpen(true)}
+                    className="p-3 rounded-xl bg-blue-50 border border-blue-200 hover:bg-blue-100 flex flex-col items-center justify-center text-center gap-1.5 transition cursor-pointer active:scale-95"
+                  >
+                    <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm">
+                      📤
+                    </div>
+                    <span className="text-xs font-bold text-blue-900">Upload វីដេអូ</span>
+                    <span className="text-[10px] text-blue-600">MP4, MKV, MOV</span>
+                  </button>
+
+                  {onOpenTikTokModal && (
+                    <button
+                      onClick={onOpenTikTokModal}
+                      className="p-3 rounded-xl bg-purple-50 border border-purple-200 hover:bg-purple-100 flex flex-col items-center justify-center text-center gap-1.5 transition cursor-pointer active:scale-95"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center font-bold text-sm">
+                        📱
+                      </div>
+                      <span className="text-xs font-bold text-purple-900">TikTok Importer</span>
+                      <span className="text-[10px] text-purple-600">ទាញយករឿងភាគ</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. Studio Modes Switcher */}
+              {onSwitchMode && (
+                <div className="bg-white rounded-2xl p-3 border border-gray-200/90 shadow-2xs space-y-2">
+                  <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                    🎛️ ប្តូររបៀបកាត់ត (Studio Mode)
+                  </div>
+                  <div className="space-y-1.5">
+                    <button
+                      onClick={() => onSwitchMode('dubbing')}
+                      className={`w-full p-2.5 rounded-xl border flex items-center justify-between text-left transition ${
+                        activeMode === 'dubbing'
+                          ? 'bg-blue-50 border-blue-400 text-blue-900 font-bold'
+                          : 'bg-gray-50 border-gray-200 text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>🎙️</span>
+                        <div>
+                          <div className="text-xs font-bold">Movie Recap & Dubbing</div>
+                          <div className="text-[10px] text-gray-400">ស្គ្រីប, បញ្ចូលសំឡេង & Subtitle</div>
+                        </div>
+                      </div>
+                      {activeMode === 'dubbing' && (
+                        <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-full font-bold">កំពុងប្រើ</span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => onSwitchMode('sequence')}
+                      className={`w-full p-2.5 rounded-xl border flex items-center justify-between text-left transition ${
+                        activeMode === 'sequence'
+                          ? 'bg-purple-50 border-purple-400 text-purple-900 font-bold'
+                          : 'bg-gray-50 border-gray-200 text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>🎞️</span>
+                        <div>
+                          <div className="text-xs font-bold">កាត់តភាគច្រើន (Episode Sequence)</div>
+                          <div className="text-[10px] text-gray-400">តភាគ 1, 2, 3... ភ្ជាប់គ្នាស្វ័យប្រវត្តិ</div>
+                        </div>
+                      </div>
+                      {activeMode === 'sequence' && (
+                        <span className="text-[10px] bg-purple-600 text-white px-2 py-0.5 rounded-full font-bold">កំពុងប្រើ</span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => onSwitchMode('cutter')}
+                      className={`w-full p-2.5 rounded-xl border flex items-center justify-between text-left transition ${
+                        activeMode === 'cutter'
+                          ? 'bg-amber-50 border-amber-400 text-amber-900 font-bold'
+                          : 'bg-gray-50 border-gray-200 text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>✂️</span>
+                        <div>
+                          <div className="text-xs font-bold">កាត់ត & Split វីដេអូ</div>
+                          <div className="text-[10px] text-gray-400">ពុះចែកភាគលឿន</div>
+                        </div>
+                      </div>
+                      {activeMode === 'cutter' && (
+                        <span className="text-[10px] bg-amber-600 text-white px-2 py-0.5 rounded-full font-bold">កំពុងប្រើ</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 3. API Key & AI Settings */}
+              {onOpenApiKeyModal && (
+                <div className="bg-white rounded-2xl p-3 border border-gray-200/90 shadow-2xs flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🔑</span>
+                    <div>
+                      <div className="text-xs font-bold text-gray-800">Google Gemini API Key</div>
+                      <div className="text-[10.5px] text-gray-400">
+                        {hasCustomApiKey ? '✅ Custom Key សកម្ម' : '⚡ ប្រើប្រាស់ Default Key'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={onOpenApiKeyModal}
+                    className="px-3 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-xs font-bold text-gray-700 transition cursor-pointer"
+                  >
+                    កំណត់ Key
+                  </button>
+                </div>
+              )}
+
+              {/* 4. Saved Recaps List Quick Selector */}
+              {savedRecaps && savedRecaps.length > 0 && (
+                <div className="bg-white rounded-2xl p-3 border border-gray-200/90 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                      💾 គម្រោងដែលបាន Save ({savedRecaps.length})
+                    </div>
+                    <button
+                      onClick={onOpenSaved}
+                      className="text-xs text-blue-600 font-bold hover:underline"
+                    >
+                      មើលទាំងអស់ →
+                    </button>
+                  </div>
+
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {savedRecaps.slice(0, 4).map((r, i) => (
+                      <button
+                        key={(r as any).id || i}
+                        onClick={() => {
+                          onSelectRecap?.(r);
+                          showToast('success', 'បានជ្រើសរើសគម្រោង', r.movie_title);
+                        }}
+                        className={`w-full p-2 rounded-xl text-left flex items-center justify-between text-xs transition cursor-pointer ${
+                          r.movie_title === recapData?.movie_title
+                            ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200'
+                            : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <span className="truncate max-w-[200px]">{r.movie_title}</span>
+                        <span className="text-[10px] text-gray-400 shrink-0">
+                          {r.recap_segments?.length || 0} បន្ទាត់
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
 
         </div>
 
@@ -2043,6 +2391,22 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         onToast={showToast}
       />
 
+      {/* AI BGM Separator Modal (Kaggle & Colab GPU Turbo) */}
+      <BgmSeparatorModal
+        isOpen={isBgmModalOpen}
+        onClose={() => setIsBgmModalOpen(false)}
+        bgmColabUrl={bgmColabUrl}
+        onSaveColabUrl={(url) => setBgmColabUrl(url)}
+        onExtractBgm={handleExtractBgm}
+        isExtractingBgm={isExtractingBgm}
+        bgmExtractProgress={bgmExtractProgress}
+        bgmExtractStatus={bgmExtractStatus}
+        hasBgmTrack={!!recapData?.bgmTrackUrl}
+        videoUrl={recapData?.videoUrl}
+        videoFileName={recapData?.videoFileName}
+        onToast={showToast}
+      />
+
       {/* AI Watermark, Logo & Subtitle Cleaner Modal */}
       <WatermarkCleanerModal
         isOpen={isWatermarkCleanerModalOpen}
@@ -2050,22 +2414,9 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         config={watermarkCleanerConfig}
         onSaveConfig={handleSaveWatermarkCleanerConfig}
         videoUrl={recapData?.videoUrl}
-      />
-
-      {/* AI Voice Cloning Studio Modal */}
-      <VoiceCloningModal
-        isOpen={isVoiceCloningModalOpen}
-        onClose={() => setIsVoiceCloningModalOpen(false)}
-        clonedVoices={clonedVoices}
-        onSaveVoice={handleSaveClonedVoice}
-        onDeleteVoice={handleDeleteClonedVoice}
-        onSelectActiveVoice={(voiceId) => {
-          if (onChangeGlobalVoicePersona) onChangeGlobalVoicePersona(voiceId);
-          showToast('success', 'បានជ្រើសរើសសំឡេង Cloned ធ្វើជាសំឡេងចម្បង');
-        }}
-        activeVoiceId={globalVoicePersona}
-        voiceRolesMapping={voiceRolesMapping}
-        onChangeVoiceRolesMapping={handleSaveVoiceRolesMapping}
+        videoFileName={recapData?.videoFileName}
+        onUpdateCleanedVideo={handleCleanedVideoUpdate}
+        onToast={showToast}
       />
 
       {/* Animated Karaoke Subtitle Style Modal */}
@@ -2098,7 +2449,7 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
         previousRecapSummary={
           recapData && recapData.recap_segments && recapData.recap_segments.length > 0
             ? `[${recapData.seriesTitle || recapData.movie_title || 'ភាគមុន'}] - ភាគទី ${recapData.episodeNumber || 1}:\n` +
-              recapData.recap_segments.map(s => `(${s.start_time}-${s.end_time}) ${s.speaker_name || ''}: ${s.khmer_script}`).join('\n')
+            recapData.recap_segments.map(s => `(${s.start_time}-${s.end_time}) ${s.speaker_name || ''}: ${s.khmer_script}`).join('\n')
             : undefined
         }
         defaultMovieTitle={recapData?.seriesTitle || recapData?.movie_title}
@@ -2115,6 +2466,28 @@ export const RecapStudio: React.FC<RecapStudioProps> = ({
             videoUrl: compressedUrl,
             videoFileName: compressedFileName
           });
+        }}
+        onToast={showToast}
+      />
+
+      {/* Facebook Reels Thumbnail & Cover Studio Modal */}
+      <ReelsThumbnailModal
+        isOpen={isThumbnailModalOpen}
+        onClose={() => setIsThumbnailModalOpen(false)}
+        movieTitle={recapData?.seriesTitle || recapData?.movie_title || 'សម្រាយសាច់រឿង'}
+        seriesTitle={recapData?.seriesTitle}
+        segments={recapData?.recap_segments}
+        episodeNumber={recapData?.episodeNumber || 1}
+        videoUrl={recapData?.videoUrl}
+        videoRef={videoPlayerRef}
+        currentThumbnailUrl={recapData?.thumbnailUrl}
+        onSaveThumbnail={(dataUrl, config) => {
+          onUpdateRecap({
+            ...recapData,
+            thumbnailUrl: dataUrl,
+            thumbnailConfig: config
+          });
+          onSaveRecap();
         }}
         onToast={showToast}
       />

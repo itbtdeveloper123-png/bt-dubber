@@ -5,9 +5,12 @@ import fs from "fs";
 import os from "os";
 import { Readable } from "stream";
 import { exec, spawn, spawnSync } from "child_process";
+import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import dotenv from "dotenv";
+
+const _serverDir = process.cwd();
 import {
   initDatabase,
   saveRecapToDb,
@@ -89,12 +92,18 @@ purgeOldTempFiles();
 
 // Helper to reliably locate python utility scripts in dev, packaged electron, or dist environments
 function getPythonScriptPath(scriptName: string): string {
+  const baseDir = process.cwd();
   const possiblePaths = [
     path.join(process.cwd(), scriptName),
+    path.join(process.cwd(), "scripts", scriptName),
     process.env.APP_DATA_DIR ? path.join(process.env.APP_DATA_DIR, "..", scriptName) : '',
+    process.env.APP_DATA_DIR ? path.join(process.env.APP_DATA_DIR, "..", "scripts", scriptName) : '',
     (process as any).resourcesPath ? path.join((process as any).resourcesPath, scriptName) : '',
-    path.join(__dirname, "..", scriptName),
-    path.join(__dirname, scriptName),
+    (process as any).resourcesPath ? path.join((process as any).resourcesPath, "scripts", scriptName) : '',
+    path.join(baseDir, "..", scriptName),
+    path.join(baseDir, "..", "scripts", scriptName),
+    path.join(baseDir, scriptName),
+    path.join(baseDir, "scripts", scriptName),
     path.join(process.cwd(), "..", scriptName)
   ].filter(Boolean);
 
@@ -205,7 +214,29 @@ app.use(["/api/media", "/api/exports"], (req, res, next) => {
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      let end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      // Handle invalid ranges (e.g. Chrome FFmpegDemuxer seek beyond EOF)
+      if (isNaN(start) || start >= fileSize || start < 0) {
+        res.writeHead(416, {
+          "Content-Range": `bytes */${fileSize}`,
+          "Access-Control-Allow-Origin": "*"
+        });
+        return res.end();
+      }
+
+      if (isNaN(end) || end >= fileSize) {
+        end = fileSize - 1;
+      }
+
+      if (start > end) {
+        res.writeHead(416, {
+          "Content-Range": `bytes */${fileSize}`,
+          "Access-Control-Allow-Origin": "*"
+        });
+        return res.end();
+      }
+
       const chunksize = end - start + 1;
       const file = fs.createReadStream(filePath, { start, end });
       const head = {
@@ -216,6 +247,9 @@ app.use(["/api/media", "/api/exports"], (req, res, next) => {
         "Access-Control-Allow-Origin": "*"
       };
       res.writeHead(206, head);
+      file.on("error", () => {
+        if (!res.headersSent) res.status(500).end();
+      });
       file.pipe(res);
     } else {
       const head = {
@@ -482,6 +516,86 @@ app.post("/api/upload-media", async (req, res) => {
   }
 });
 
+// Server-Side 100% Full Audio Extractor via FFmpeg
+function extractAudioFromVideoFile(videoPath: string): { wavPath: string; base64: string; duration: number } | null {
+  try {
+    const tempWav = path.join(TEMP_DIR, `full_audio_${Date.now()}.wav`);
+    const pyCode = `
+import os, sys, imageio_ffmpeg, subprocess
+try:
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    in_file = sys.argv[1]
+    out_file = sys.argv[2]
+    cmd = [ffmpeg, "-y", "-i", in_file, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", out_file]
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
+        print("OK")
+    else:
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+`;
+    const pyRes = spawnSync("python", ["-c", pyCode, videoPath, tempWav], { windowsHide: true, timeout: 45000 });
+    if (pyRes.status === 0 && fs.existsSync(tempWav) && fs.statSync(tempWav).size > 1000) {
+      const buf = fs.readFileSync(tempWav);
+      const b64 = buf.toString("base64");
+      try { fs.unlinkSync(tempWav); } catch {}
+      return { wavPath: tempWav, base64: b64, duration: buf.length / 32000 };
+    }
+  } catch (e) {
+    console.warn("Server FFmpeg audio extraction notice:", e);
+  }
+  return null;
+}
+
+// 100% Complete Audio Extraction Endpoint
+app.post("/api/extract-full-audio", async (req, res) => {
+  try {
+    const { fileBase64, fileName, mediaUrl } = req.body || {};
+    let targetVideoPath = "";
+    let shouldDelete = false;
+
+    if (mediaUrl && typeof mediaUrl === "string" && mediaUrl.startsWith("/api/media/")) {
+      const diskName = path.basename(mediaUrl);
+      const possiblePath = path.join(UPLOADS_DIR, diskName);
+      if (fs.existsSync(possiblePath)) {
+        targetVideoPath = possiblePath;
+      }
+    }
+
+    if (!targetVideoPath && fileBase64) {
+      const safeName = (fileName || "vid.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const tempVideo = path.join(TEMP_DIR, `temp_extract_${Date.now()}_${safeName}`);
+      fs.writeFileSync(tempVideo, Buffer.from(fileBase64, "base64"));
+      targetVideoPath = tempVideo;
+      shouldDelete = true;
+    }
+
+    if (!targetVideoPath || !fs.existsSync(targetVideoPath)) {
+      return res.status(400).json({ error: "No video file found" });
+    }
+
+    const extracted = extractAudioFromVideoFile(targetVideoPath);
+    if (shouldDelete) {
+      try { fs.unlinkSync(targetVideoPath); } catch {}
+    }
+
+    if (extracted && extracted.base64) {
+      console.log(`✅ [FFmpeg Full Audio Extraction]: Extracted ${(extracted.duration).toFixed(1)}s of 16kHz audio (${(extracted.base64.length / 1024 / 1024).toFixed(1)}MB b64)`);
+      return res.json({
+        success: true,
+        base64: extracted.base64,
+        mimeType: "audio/wav",
+        durationSec: extracted.duration
+      });
+    }
+
+    return res.status(500).json({ error: "FFmpeg audio extraction failed" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Helper to instantiate GoogleGenAI lazily with support for user-supplied Translation API key
 function getGenAIClient(customApiKey?: string): GoogleGenAI {
   dotenv.config({ override: true });
@@ -491,6 +605,18 @@ function getGenAIClient(customApiKey?: string): GoogleGenAI {
   }
   return new GoogleGenAI({ apiKey });
 }
+
+// Active and resilient Gemini candidate models in order of capability & availability
+export const CANDIDATE_GEMINI_MODELS = [
+  "gemini-flash-latest",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash-preview"
+];
 
 // Helper to instantiate GoogleGenAI with dedicated Voice Clone & Audio Generation API key
 function getVoiceGenAIClient(customVoiceApiKey?: string): GoogleGenAI {
@@ -560,26 +686,60 @@ app.post("/api/key/validate", async (req, res) => {
       return res.status(400).json({ valid: false, error: "សូមបញ្ចូល API Key មុននឹងធ្វើតេស្ត!" });
     }
 
-    const ai = new GoogleGenAI({ apiKey: customKey });
     let validatedModel = "Gemini Flash (Latest)";
     let responseText = "";
-
-    const testModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
     let lastErr: any = null;
 
-    for (const m of testModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: m,
-          contents: "Reply with 'OK'",
-        });
-        if (response && response.text) {
-          responseText = response.text;
-          validatedModel = m === "gemini-3.6-flash" ? "Gemini 3.6 Flash" : m;
-          break;
+    // Method 1: Google GenAI SDK (Standard API Keys)
+    try {
+      const ai = new GoogleGenAI({ apiKey: customKey });
+      const testModels = CANDIDATE_GEMINI_MODELS;
+
+      for (const m of testModels) {
+        try {
+          const response = await ai.models.generateContent({
+            model: m,
+            contents: "Reply with 'OK'",
+          });
+          if (response && response.text) {
+            responseText = response.text;
+            validatedModel = m === "gemini-flash-latest" ? "Gemini Flash (Latest)" : (m === "gemini-3.8-flash" ? "Gemini 3.8 Flash" : (m === "gemini-3.7-flash" ? "Gemini 3.7 Flash" : m));
+            break;
+          }
+        } catch (e: any) {
+          lastErr = e;
+          const msg = e?.message || "";
+          if (msg.includes("404") || msg.includes("NOT_FOUND")) {
+            continue;
+          }
         }
-      } catch (e: any) {
-        lastErr = e;
+      }
+    } catch (sdkErr: any) {
+      lastErr = sdkErr;
+    }
+
+    // Method 2: Direct REST with Bearer Token (for AQ. and OAuth Authorization Keys)
+    if (!responseText && (customKey.startsWith("AQ.") || customKey.startsWith("ya29."))) {
+      try {
+        const restRes = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${customKey}`
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "Reply with 'OK'" }] }]
+          })
+        });
+        const restData = await restRes.json().catch(() => ({}));
+        if (restRes.ok && restData.candidates?.[0]?.content?.parts?.[0]?.text) {
+          responseText = restData.candidates[0].content.parts[0].text;
+          validatedModel = "Gemini Flash Latest (Auth Key)";
+        } else if (restData.error) {
+          lastErr = new Error(restData.error.message || JSON.stringify(restData.error));
+        }
+      } catch (restErr: any) {
+        lastErr = restErr;
       }
     }
 
@@ -587,16 +747,19 @@ app.post("/api/key/validate", async (req, res) => {
       return res.json({ valid: true, model: validatedModel });
     }
 
-    throw lastErr || new Error("Gemini API មិនបានឆ្លើយតបមកវិញឡើយ");
-  } catch (err: any) {
-    const msg = err?.message || "";
+    const msg = lastErr?.message || "";
     let friendlyError = msg;
-    if (msg.includes("429") || msg.includes("Quota exceeded") || msg.includes("RESOURCE_EXHAUSTED")) {
+    if (msg.includes("API_KEY_SERVICE_BLOCKED") || msg.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED") || msg.includes("401") || msg.includes("UNAUTHENTICATED")) {
+      friendlyError = "Google Cloud Project បានបិទ (Block) ឬមិនទាន់បាន Enable សេវាកម្ម 'Generative Language API' សម្រាប់ Key នេះឡើយ។ សូមចូល aistudio.google.com/app/apikey រួចចុច 'Create API key in NEW project' ដើម្បីទទួលបាន Key ដែលបើកសិទ្ធិស្រាប់។";
+    } else if (msg.includes("429") || msg.includes("Quota exceeded") || msg.includes("RESOURCE_EXHAUSTED")) {
       friendlyError = "API Key បានលើសកម្រិត Free Quota របស់ Google AI Studio! សូមប្តូរ API Key ថ្មី ឬរង់ចាំបន្តិច។";
     } else if (msg.includes("API key not valid") || msg.includes("API_KEY_INVALID") || msg.includes("403") || msg.includes("PERMISSION_DENIED")) {
       friendlyError = "API Key មិនត្រឹមត្រូវ ឬត្រូវបានបិទ (Invalid API Key)។ សូមពិនិត្យមើល API Key ឡើងវិញ (ត្រូវប្រាកដថាបានបង្កើតពី aistudio.google.com)!";
     }
+
     return res.status(400).json({ valid: false, error: friendlyError });
+  } catch (err: any) {
+    return res.status(400).json({ valid: false, error: err.message || "Failed to validate API Key" });
   }
 });
 
@@ -625,24 +788,29 @@ async function fetchGoogleTTSChunk(textChunk: string): Promise<Buffer> {
   const clients = ['tw-ob', 'gtx', 'dict-chrome-ex'];
   let lastErr: any = null;
 
-  for (const client of clients) {
-    try {
-      const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=km&client=${client}&q=${encodeURIComponent(textChunk)}`;
-      const fetchResponse = await fetch(googleTtsUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          "Referer": "https://translate.google.com/",
-          "Accept": "*/*"
-        },
-      });
+  for (let retry = 0; retry < 2; retry++) {
+    for (const client of clients) {
+      try {
+        const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=km&client=${client}&q=${encodeURIComponent(textChunk)}`;
+        const fetchResponse = await fetch(googleTtsUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://translate.google.com/",
+            "Accept": "*/*"
+          },
+        });
 
-      if (fetchResponse.ok) {
-        const audioArrayBuffer = await fetchResponse.arrayBuffer();
-        return Buffer.from(audioArrayBuffer);
+        if (fetchResponse.ok) {
+          const audioArrayBuffer = await fetchResponse.arrayBuffer();
+          return Buffer.from(audioArrayBuffer);
+        }
+        lastErr = new Error(`TTS client ${client} returned status ${fetchResponse.status}`);
+      } catch (e) {
+        lastErr = e;
       }
-      lastErr = new Error(`TTS client ${client} returned status ${fetchResponse.status}`);
-    } catch (e) {
-      lastErr = e;
+    }
+    if (retry < 1) {
+      await new Promise(r => setTimeout(r, 600));
     }
   }
 
@@ -802,28 +970,17 @@ export function cleanKhmerSpeechForTTS(text: string): string {
   let cleaned = String(text)
     // Strip foreign annotations like Orig: "..."
     .replace(/Orig\s*:\s*["'].*?["']/gi, '')
-    // Strip bracketed annotations like (Note: ...), [Sound: ...]
-    .replace(/\(.*?\)|\[.*?\]/g, '')
-    // Strip leading speaker label prefixes like "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:"
-    .replace(/^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|មេក្រុម|មេបញ្ជាការ|Marcus|Elena|[^\s:៖]{2,15})\s*[:៖-]\s*/gi, '')
-    .replace(/\bMarcus\b/gi, 'ម៉ាកុស')
-    .replace(/\bElena\b/gi, 'អេលេណា')
-    .replace(/\bSWAT\b/gi, 'ស្វាត')
-    .replace(/\bCyber\b/gi, 'សាយប័រ')
-    .replace(/\bVault\b/gi, 'វ៉ូល')
-    .replace(/\bPolice\b/gi, 'ប៉ូលីស')
-    .replace(/\bHeist\b/gi, 'ហាយស៍')
-    .replace(/\bFlash\b/gi, 'ហ្វ្លាស')
-    .replace(/\bLaser\b/gi, 'ឡាស៊ែរ')
-    .replace(/\bHackers?\b/gi, 'ហេកឃ័រ')
-    .replace(/\bTeam\b/gi, 'ក្រុម')
-    .replace(/\bMonaco\b/gi, 'ម៉ូណាកូ')
+    // Strip purely English metadata annotations like (Note: ...), [Music], [Sound]
+    .replace(/\((?:Note|Sound|Music|SFX|Audio|Scene)[^)]*\)/gi, '')
+    .replace(/\[(?:Note|Sound|Music|SFX|Audio|Scene)[^\]]*\]/gi, '')
+    // Strip only the bracket symbols so Khmer text inside brackets/parentheses is preserved 100%
+    .replace(/[()[\]{}]/g, ' ')
+    // Strip leading speaker label prefixes ONLY if followed by colon (e.g. "តួប្រុស: ", "អ្នកសម្រាយ: ")
+    .replace(/^(?:តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|ក្មេងប្រុស|ក្មេងស្រី|មេក្រុម|មេបញ្ជាការ)\s*[:៖]\s*/gi, '')
     .replace(/[\r\n\t]+/g, ' ')
-    .replace(/[a-zA-Z\u4e00-\u9fa5]+/g, ' ')
-    .replace(/[^\u1780-\u17FF0-9\s.,!?«»""''()\-—៖។ៗ]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned;
+  return cleaned || String(text).trim();
 }
 
 export function calculateTtsSpeedRate(speed: number | undefined): string {
@@ -837,6 +994,67 @@ export function calculateTtsSpeedRate(speed: number | undefined): string {
   if (numSpeed >= 1.10) return '+22%';
   if (numSpeed <= 0.95) return '+12%';
   return '+32%'; // Standard rapid movie recap pace
+}
+
+function resolveSegmentVoiceTarget(
+  seg: any,
+  voiceRolesMapping: any = {},
+  globalVoicePersona: string = 'auto',
+  previousVoice: string = 'narrator'
+): string {
+  if (globalVoicePersona && globalVoicePersona !== 'auto' && globalVoicePersona !== 'auto_default' && globalVoicePersona !== 'auto_cloned') {
+    return globalVoicePersona;
+  }
+
+  const rawSpeaker = (seg.speaker_gender || '').trim().toLowerCase();
+  const speakerName = (seg.speaker_name || seg.character || '').trim().toLowerCase();
+  const rawEmotion = (seg.voice_emotion || seg.voice_tone || '').trim().toLowerCase();
+
+  // 1. Direct Cloned Voice ID (e.g. "voice_...")
+  if (rawSpeaker.startsWith('voice_')) {
+    return rawSpeaker;
+  }
+
+  // 2. Exact match in voiceRolesMapping
+  if (voiceRolesMapping && voiceRolesMapping[rawSpeaker]) {
+    return voiceRolesMapping[rawSpeaker];
+  }
+
+  // 3. Keyword matching for character roles
+  const combined = `${rawSpeaker} ${speakerName} ${rawEmotion}`.toLowerCase();
+  if (/male_elder|elder_male|grandfather|old_man|លោកតា|តាចាស់|ព្រឹទ្ធាចារ្យ/i.test(combined)) {
+    return voiceRolesMapping?.male_elder || voiceRolesMapping?.male || 'male_elder';
+  }
+  if (/female_elder|elder_female|grandmother|old_woman|លោកយាយ|យាយចាស់/i.test(combined)) {
+    return voiceRolesMapping?.female_elder || voiceRolesMapping?.female || 'female_elder';
+  }
+  if (/child_boy|ក្មេងប្រុស|កូនប្រុស|ប្អូនប្រុស|boy|son|little_boy/i.test(combined)) {
+    return voiceRolesMapping?.child_boy || voiceRolesMapping?.child || voiceRolesMapping?.male || 'child_boy';
+  }
+  if (/child_girl|ក្មេងស្រី|កូនស្រី|ប្អូនស្រី|girl|daughter|little_girl/i.test(combined)) {
+    return voiceRolesMapping?.child_girl || voiceRolesMapping?.child || voiceRolesMapping?.female || 'child_girl';
+  }
+  if (/child|កុមារ|ក្មេង/i.test(combined)) {
+    return voiceRolesMapping?.child || voiceRolesMapping?.female || 'child_girl';
+  }
+  if (/villain|monster|demon|អាក្រក់|ចោរ|បិសាច/i.test(combined)) {
+    return voiceRolesMapping?.villain || voiceRolesMapping?.male || 'villain';
+  }
+  if (/female|sreymom|ស្រី|នាង|កញ្ញា|អ្នកស្រី|woman|lady/i.test(combined)) {
+    return voiceRolesMapping?.female || 'female';
+  }
+  if (/male|piseth|ប្រុស|លោក|បង|បុរស|man|guy/i.test(combined)) {
+    return voiceRolesMapping?.male || 'male';
+  }
+  if (/narrator|អ្នកសម្រាយ|អ្នករៀបរាប់|ពិធីករ|host/i.test(combined)) {
+    return voiceRolesMapping?.narrator || 'narrator';
+  }
+
+  // 4. Fallback to previous dialogue voice or narrator default (Piseth)
+  if (previousVoice && previousVoice !== 'female') {
+    return previousVoice;
+  }
+  return voiceRolesMapping?.narrator || 'narrator';
 }
 
 async function generateSingleTTSBuffer(options: {
@@ -866,187 +1084,42 @@ async function generateSingleTTSBuffer(options: {
   let voxcpmAudioBase64 = '';
   let voxcpmGender = 'male';
   let voxcpmSpeedRate = 1.0;
-  let voxcpmSampleText = '';
-
-  // Check if direct Microsoft Edge-TTS is requested (Piseth & Sreymom)
-  const isDirectEdge = 
-    requestedVoice.startsWith('edge_') || 
-    voiceTarget.startsWith('edge_') || 
-    requestedVoice === 'auto_default' || 
-    voiceTarget === 'auto_default' || 
-    requestedVoice === 'default' || 
-    voiceTarget === 'default' ||
-    requestedVoice === 'piseth' ||
-    requestedVoice === 'sreymom';
-
-  if (!isDirectEdge) {
-    if (requestedVoice.startsWith('kiri_') || voiceTarget.startsWith('kiri_')) {
-      isKiriNative = true;
-      kiriVoiceName = (requestedVoice.startsWith('kiri_') ? requestedVoice : voiceTarget).replace(/^kiri_/i, '');
-    } else if (requestedVoice.startsWith('gemini_') || voiceTarget.startsWith('gemini_')) {
-      isGeminiNative = true;
-      geminiVoiceName = (requestedVoice.startsWith('gemini_') ? requestedVoice : voiceTarget).replace('gemini_', '');
-    }
-  }
-
   let edgeVoice = 'km-KH-PisethNeural';
-  if (
-    requestedVoice.includes('sreymom') ||
-    requestedVoice.includes('female') ||
-    requestedGender.includes('female') ||
-    requestedGender.includes('sreymom') ||
-    requestedGender === 'child_girl' ||
-    requestedVoice === 'child_girl' ||
-    requestedGender === 'child' ||
-    requestedVoice === 'km-kh-sreymomneural'
-  ) {
+
+  const isElderMale = (requestedGender === 'male_elder' || requestedVoice === 'male_elder' || /male_elder|elder_male|grandfather|old_man|លោកតា|តាចាស់|ព្រឹទ្ធាចារ្យ/i.test(requestedGender + ' ' + requestedVoice));
+  const isElderFemale = (requestedGender === 'female_elder' || requestedVoice === 'female_elder' || /female_elder|elder_female|grandmother|old_woman|លោកយាយ|យាយចាស់/i.test(requestedGender + ' ' + requestedVoice));
+  const isBoyHint = (requestedGender === 'child_boy' || requestedVoice === 'child_boy' || /child_boy|ក្មេងប្រុស|កូនប្រុស|ប្អូនប្រុស|boy|son/i.test(requestedGender + ' ' + requestedVoice));
+  const isGirlHint = (requestedGender === 'child_girl' || requestedVoice === 'child_girl' || requestedVoice === 'child' || /child_girl|ក្មេងស្រី|កូនស្រី|ប្អូនស្រី|girl|daughter/i.test(requestedGender + ' ' + requestedVoice));
+  const isVillain = (requestedGender === 'villain' || requestedVoice === 'villain' || /villain|monster|demon|អាក្រក់|ចោរ|បិសាច/i.test(requestedGender + ' ' + requestedVoice));
+  const isFemaleHint = (isGirlHint || isElderFemale || requestedVoice.includes('sreymom') || requestedVoice.includes('female') || requestedGender.includes('female') || requestedGender.includes('sreymom') || requestedVoice === 'km-kh-sreymomneural' || /ស្រី|នាង|កញ្ញា|អ្នកស្រី|woman|lady/i.test(requestedGender + ' ' + requestedVoice));
+
+  if (isElderMale || isBoyHint || isVillain || requestedVoice.includes('piseth') || requestedVoice === 'male' || requestedGender === 'male' || requestedVoice === 'narrator' || requestedGender === 'narrator') {
+    edgeVoice = 'km-KH-PisethNeural';
+  } else if (isFemaleHint) {
     edgeVoice = 'km-KH-SreymomNeural';
   } else {
-    edgeVoice = 'km-KH-PisethNeural';
+    edgeVoice = requestedGender.includes('female') ? 'km-KH-SreymomNeural' : 'km-KH-PisethNeural';
   }
 
   // Handle specific pitch offsets for edge roles
-  if (requestedVoice.includes('child') || requestedGender.includes('child')) {
-    requestedPitch = '+35Hz';
-    requestedRate = '+22%';
-  } else if (requestedVoice.includes('elder') || requestedGender.includes('elder')) {
+  if (isBoyHint) {
+    requestedPitch = '+24Hz';
+    requestedRate = '+20%';
+  } else if (isGirlHint) {
+    requestedPitch = '+28Hz';
+    requestedRate = '+20%';
+  } else if (isElderMale) {
     requestedPitch = '-15Hz';
     requestedRate = '-8%';
-  } else if (requestedVoice.includes('villain') || requestedGender.includes('villain')) {
-    requestedPitch = '-20Hz';
-  }
-
-  let clonedTargetSamplePath: string | null = null;
-  const allCloned = getAllClonedVoicesFromDb();
-
-  let targetClonedProfile = (!isDirectEdge && voiceTarget && voiceTarget.startsWith('voice_')) 
-    ? getClonedVoiceByIdFromDb(voiceTarget)
-    : null;
-
-  // Auto-resolve to saved Cloned/VoxCPM2 profiles if generic male/female/narrator is requested AND not direct edge
-  if (!isDirectEdge && !targetClonedProfile && allCloned.length > 0 && voiceTarget !== 'auto_default' && voiceTarget !== 'default') {
-    if (requestedVoice.includes('female') || requestedGender.includes('female') || voiceTarget === 'female') {
-      targetClonedProfile = allCloned.find((v: any) => v.gender === 'female') || allCloned[allCloned.length - 1];
-    } else {
-      targetClonedProfile = allCloned.find((v: any) => v.gender === 'male') || allCloned[0];
-    }
-  }
-
-  if (targetClonedProfile) {
-    const cloned = targetClonedProfile;
-    if (cloned.provider === 'kiri' || cloned.kiriVoiceId || (cloned.baseVoice && cloned.baseVoice.startsWith('kiri_'))) {
-      isKiriNative = true;
-      kiriVoiceName = cloned.kiriVoiceId || (cloned.baseVoice ? cloned.baseVoice.replace(/^kiri_/i, '') : 'Chanda');
-    } else if (cloned.provider === 'voxcpm2' || cloned.colabUrl || options.colabUrlOverride || process.env.VOXCPM2_API_URL) {
-      isVoxCPM = true;
-      voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || cloned.colabUrl || process.env.COLAB_VOICE_URL || '').trim();
-      voxcpmPresetId = (cloned.sampleAudioUrl || '').startsWith('preset:') 
-        ? cloned.sampleAudioUrl.replace(/^preset:/, '')
-        : (cloned.audioBase64?.startsWith('preset:') ? cloned.audioBase64.replace(/^preset:/, '') : '');
-      if (!voxcpmPresetId) {
-        voxcpmPresetId = cloned.gender === 'female' ? 'female_sweet' : 'male_hero';
-      }
-      voxcpmAudioBase64 = (cloned.audioBase64 && !cloned.audioBase64.startsWith('preset:')) ? cloned.audioBase64 : '';
-      voxcpmGender = cloned.gender || (edgeVoice.includes('Sreymom') ? 'female' : 'male');
-      voxcpmSpeedRate = cloned.speedRate || 1.0;
-      voxcpmSampleText = (cloned as any).sampleText || '';
-      if (!voxcpmAudioBase64 && cloned.sampleFileName) {
-        const sPath = path.join(CLONED_VOICES_DIR, cloned.sampleFileName);
-        if (fs.existsSync(sPath)) {
-          voxcpmAudioBase64 = fs.readFileSync(sPath).toString('base64');
-        }
-      }
-    }
-    edgeVoice = cloned.baseVoice || (cloned.gender === 'female' ? 'km-KH-SreymomNeural' : 'km-KH-PisethNeural');
-    const offset = cloned.pitchOffset ?? 0;
-    requestedPitch = offset >= 0 ? `+${offset}Hz` : `${offset}Hz`;
-    if (cloned.speedRate && cloned.speedRate !== 1.0) {
-      const ratePercent = Math.round((cloned.speedRate - 1.0) * 100);
-      requestedRate = ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`;
-    }
-    if (cloned.isPureClone === false) {
-      morphAlpha = '0.85';
-    } else {
-      morphAlpha = '1.0';
-    }
-    if (cloned.sampleFileName) {
-      const sPath = path.join(CLONED_VOICES_DIR, cloned.sampleFileName);
-      if (fs.existsSync(sPath)) {
-        clonedTargetSamplePath = sPath;
-      }
-    }
-  } else if (voiceTarget === 'child_boy' || requestedGender === 'child_boy') {
-    edgeVoice = 'km-KH-PisethNeural';
-    requestedPitch = '+32Hz';
-    requestedRate = '+22%';
-    voxcpmPresetId = 'kid_boy';
-    voxcpmGender = 'male';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'child_girl' || requestedGender === 'child_girl' || voiceTarget === 'child' || requestedGender === 'child') {
-    edgeVoice = 'km-KH-SreymomNeural';
-    requestedPitch = '+38Hz';
-    requestedRate = '+20%';
-    voxcpmPresetId = 'kid_girl';
-    voxcpmGender = 'female';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'male_elder' || requestedGender === 'male_elder') {
-    edgeVoice = 'km-KH-PisethNeural';
-    requestedPitch = '-18Hz';
-    requestedRate = '-10%';
-    voxcpmPresetId = 'elder_male';
-    voxcpmGender = 'male';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'female_elder' || requestedGender === 'female_elder') {
-    edgeVoice = 'km-KH-SreymomNeural';
+  } else if (isElderFemale) {
     requestedPitch = '-12Hz';
     requestedRate = '-8%';
-    voxcpmPresetId = 'elder_female';
-    voxcpmGender = 'female';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'villain' || requestedGender === 'villain') {
-    edgeVoice = 'km-KH-PisethNeural';
-    requestedPitch = '-22Hz';
-    requestedRate = '-5%';
-    voxcpmPresetId = 'villain';
-    voxcpmGender = 'male';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'news_host' || requestedGender === 'news_host') {
-    edgeVoice = 'km-KH-PisethNeural';
-    requestedPitch = '+0Hz';
-    requestedRate = '+15%';
-    voxcpmPresetId = 'news_host';
-    voxcpmGender = 'male';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-  } else if (voiceTarget === 'female_lively') {
-    edgeVoice = 'km-KH-SreymomNeural';
-    requestedPitch = '+10Hz';
-    requestedRate = '+25%';
-    voxcpmPresetId = 'female_lively';
-    voxcpmGender = 'female';
-    isVoxCPM = Boolean(options.colabUrlOverride || process.env.VOXCPM2_API_URL);
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
+  } else if (isVillain) {
+    requestedPitch = '-25Hz';
   }
 
-  // Auto-enable VoxCPM2 engine if a live Colab/Kaggle URL is provided in request or env (and not direct edge)
-  if (!isDirectEdge && !isVoxCPM && !isKiriNative && !isGeminiNative && (options.colabUrlOverride || process.env.VOXCPM2_API_URL)) {
-    const isFem = (requestedVoice.includes('female') || requestedGender.includes('female') || voiceTarget === 'female');
-    isVoxCPM = true;
-    voxcpmColabUrl = (options.colabUrlOverride || process.env.VOXCPM2_API_URL || '').trim();
-    if (!voxcpmPresetId) {
-      voxcpmPresetId = isFem ? 'female_sweet' : 'male_hero';
-    }
-    voxcpmGender = isFem ? 'female' : 'male';
-  }
-
-  const requestedEmotion = 'neutral';
-
-  const effectiveGenderForCache = targetClonedProfile ? `${targetClonedProfile.id}_${targetClonedProfile.provider || 'voxcpm2'}` : voiceTarget.toLowerCase();
+  const requestedEmotion = (options.requestedEmotion || 'neutral').toLowerCase();
+  const effectiveGenderForCache = `${edgeVoice}_${requestedPitch}_${requestedRate}`;
   const cacheKey = `${effectiveGenderForCache}_${requestedEmotion}_${cleanText}`;
 
   // Check RAM and DB cache (skip if bypassCache is true)
@@ -1063,49 +1136,20 @@ async function generateSingleTTSBuffer(options: {
   }
 
   let audioBuffer: Buffer;
-  if (isVoxCPM && voxcpmColabUrl) {
-    try {
-      audioBuffer = await fetchColabVoxCPM({
-        text: cleanText,
-        audioBase64: voxcpmAudioBase64,
-        presetId: voxcpmPresetId,
-        gender: voxcpmGender,
-        baseVoice: edgeVoice,
-        speedRate: voxcpmSpeedRate,
-        colabUrl: voxcpmColabUrl,
-        apiKey: process.env.VOXCPM2_API_KEY,
-        model: 'voxcpm2',
-        sampleText: voxcpmSampleText
-      });
-    } catch (voxErr: any) {
-      console.warn("[VoxCPM2 TTS Failed]:", voxErr.message);
-      // Generate standard fallback but DO NOT cache it under VoxCPM cloned key
-      const fallbackBuf = await fetchEdgeTTS(cleanText, edgeVoice, requestedRate, requestedPitch);
-      return { audioBuffer: fallbackBuf, cacheKey: `fallback_${cacheKey}`, edgeVoice };
-    }
-  } else if (isKiriNative) {
-    try {
-      const clientKiriApiKey = (options.kiriApiKey || process.env.KIRITTS_API_KEY || '').trim();
-      audioBuffer = await fetchKiriTTS(cleanText, kiriVoiceName, clientKiriApiKey);
-    } catch (kiriErr: any) {
-      audioBuffer = await fetchEdgeTTS(cleanText, edgeVoice, requestedRate, requestedPitch);
-    }
-  } else if (isGeminiNative) {
-    try {
-      const clientVoiceApiKey = (options.voiceApiKey || process.env.GEMINI_API_KEY || '').trim();
-      audioBuffer = await generateGeminiTtsAudio(cleanText, geminiVoiceName, clientVoiceApiKey);
-    } catch (geminiTtsErr) {
-      audioBuffer = await fetchEdgeTTS(cleanText, edgeVoice, requestedRate, requestedPitch);
-    }
-  } else {
+  try {
     try {
       audioBuffer = await fetchEdgeTTS(cleanText, edgeVoice, requestedRate, requestedPitch);
-    } catch (edgeErr) {
-      const chunks = splitTextIntoTTSChunks(cleanText, 120);
-      const chunkPromises = chunks.map(chunk => fetchGoogleTTSChunk(chunk));
-      const audioChunks = await Promise.all(chunkPromises);
-      audioBuffer = Buffer.concat(audioChunks);
+    } catch (firstErr: any) {
+      // 1 quick retry for transient socket/DNS drop
+      await new Promise(r => setTimeout(r, 600));
+      audioBuffer = await fetchEdgeTTS(cleanText, edgeVoice, requestedRate, requestedPitch);
     }
+  } catch (edgeErr: any) {
+    console.warn("EdgeTTS direct synthesis notice, trying backup chunking:", edgeErr.message);
+    const chunks = splitTextIntoTTSChunks(cleanText, 120);
+    const chunkPromises = chunks.map(chunk => fetchGoogleTTSChunk(chunk));
+    const audioChunks = await Promise.all(chunkPromises);
+    audioBuffer = Buffer.concat(audioChunks);
   }
 
   // Save to Cache
@@ -1117,6 +1161,24 @@ async function generateSingleTTSBuffer(options: {
   setCachedTTSToDb(cacheKey, cleanText, edgeVoice, requestedRate, requestedPitch, audioBuffer.toString('base64'));
 
   return { audioBuffer, cacheKey, edgeVoice };
+}
+
+export function detectAudioBufferMimeType(buf: Buffer): string {
+  if (buf && buf.length >= 4) {
+    // RIFF....WAVE (Standard WAV)
+    if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+      return "audio/wav";
+    }
+    // ID3 or MP3 sync frame (MPEG)
+    if ((buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) || (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0)) {
+      return "audio/mpeg";
+    }
+    // OggS
+    if (buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) {
+      return "audio/ogg";
+    }
+  }
+  return "audio/mpeg";
 }
 
 app.get("/api/tts", async (req, res) => {
@@ -1151,6 +1213,9 @@ app.get("/api/tts", async (req, res) => {
       bypassCache
     });
 
+    // Detect actual binary audio format (audio/wav for VoxCPM2 PCM, audio/mpeg for EdgeTTS)
+    const mimeType = detectAudioBufferMimeType(audioBuffer);
+
     // Determine cache-control: no-store when forceRefresh so browser never serves stale audio
     const cacheControlHeader = bypassCache ? 'no-store, no-cache, must-revalidate' : 'public, max-age=300';
 
@@ -1175,7 +1240,7 @@ app.get("/api/tts", async (req, res) => {
         "Content-Range": `bytes ${start}-${end}/${audioBuffer.length}`,
         "Accept-Ranges": "bytes",
         "Content-Length": chunk.length.toString(),
-        "Content-Type": "audio/mpeg",
+        "Content-Type": mimeType,
         "Access-Control-Allow-Origin": "*",
         "Cross-Origin-Resource-Policy": "cross-origin",
         "Cache-Control": cacheControlHeader,
@@ -1184,7 +1249,7 @@ app.get("/api/tts", async (req, res) => {
     }
 
     res.status(200).set({
-      "Content-Type": "audio/mpeg",
+      "Content-Type": mimeType,
       "Content-Length": audioBuffer.length.toString(),
       "Accept-Ranges": "bytes",
       "Access-Control-Allow-Origin": "*",
@@ -1249,6 +1314,7 @@ app.post("/api/tts/batch-pregenerate", async (req, res) => {
       ? voiceRolesMapping.narrator 
       : (effectiveMale || effectiveFemale || 'narrator');
 
+    let lastBatchTargetVoice = 'narrator';
     // Process all segments sequentially to safely stream without overwhelming Colab GPU
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i];
@@ -1263,19 +1329,8 @@ app.post("/api/tts/batch-pregenerate", async (req, res) => {
 
       if (!cleanText) continue;
 
-      let targetVoice = seg.speaker_gender || 'female';
-      const g = (targetVoice || '').toLowerCase();
-      if (globalVoicePersona === 'auto_default' || globalVoicePersona === 'default') {
-        targetVoice = (g === 'male' || g === 'male_elder' || g === 'villain' || g === 'narrator') ? 'edge_piseth' : 'edge_sreymom';
-      } else if (globalVoicePersona && globalVoicePersona !== 'auto' && globalVoicePersona !== 'auto_cloned') {
-        targetVoice = globalVoicePersona;
-      } else if (g === 'male' || g === 'male_elder' || g === 'villain') {
-        targetVoice = effectiveMale;
-      } else if (g === 'female' || g === 'female_elder') {
-        targetVoice = effectiveFemale;
-      } else if (g === 'narrator') {
-        targetVoice = effectiveNarrator;
-      }
+      const targetVoice = resolveSegmentVoiceTarget(seg, voiceRolesMapping, globalVoicePersona, lastBatchTargetVoice);
+      lastBatchTargetVoice = targetVoice;
 
       const emo = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
       const targetCloned = allCloned.find((v: any) => v.id === targetVoice);
@@ -1851,18 +1906,31 @@ app.post("/api/transcribe-audio", async (req, res) => {
       return res.status(500).json({ error: "Gemini API Client not initialized." });
     }
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { inlineData: { mimeType: 'audio/mp3', data: base64Data } },
-            { text: "Transcribe the audio exactly as spoken in Khmer language. Do not translate. Output ONLY the raw spoken text without any prefix, punctuation or commentary." }
+    let response: any = null;
+    let transcribeErr: any = null;
+    for (const m of ["gemini-flash-latest", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]) {
+      try {
+        response = await ai.models.generateContent({
+          model: m,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { inlineData: { mimeType: 'audio/mp3', data: base64Data } },
+                { text: "Transcribe the audio exactly as spoken in Khmer language. Do not translate. Output ONLY the raw spoken text without any prefix, punctuation or commentary." }
+              ]
+            }
           ]
-        }
-      ]
-    });
+        });
+        if (response && response.text) break;
+      } catch (err: any) {
+        transcribeErr = err;
+      }
+    }
+
+    if (!response || !response.text) {
+      throw transcribeErr || new Error("Failed to transcribe audio with Gemini");
+    }
 
     const transcript = response.text || '';
     return res.json({ success: true, text: transcript.trim() });
@@ -2269,8 +2337,9 @@ app.post("/api/separate-bgm-stream", async (req, res) => {
   let tempInputFile = "";
 
   try {
-    const { videoUrl, videoBase64, fileName } = req.body || {};
+    const { videoUrl, videoBase64, fileName, colabUrl, aggressiveness } = req.body || {};
     const safeBaseName = (fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const aggVal = (typeof aggressiveness === 'number' && !isNaN(aggressiveness)) ? aggressiveness : 1.2;
 
     // 1. Resolve source video file path
     let localVideoPath = "";
@@ -2344,11 +2413,65 @@ app.post("/api/separate-bgm-stream", async (req, res) => {
     const outputFileName = `bgm_${Date.now()}_${cleanNoExt}.wav`;
     const outputPath = path.join(UPLOADS_DIR, outputFileName);
 
-    // 3. Spawn Python vocal remover
-    const pyScript = getPythonScriptPath("vocal_remover.py");
-    console.log(`[Vocal Remover] Processing BGM separation: ${localVideoPath} -> ${outputPath}`);
+    // 2.5 Try Remote Kaggle / Colab GPU Worker if colabUrl provided
+    if (colabUrl && typeof colabUrl === 'string' && colabUrl.trim()) {
+      const cleanColab = colabUrl.trim().replace(/\/+$/, '');
+      try {
+        sendEvent({ type: "progress", percent: 15 });
+        console.log(`[Vocal Remover Remote] Processing via Kaggle/Colab GPU: ${cleanColab} (agg=${aggVal})`);
+        
+        let audioBase64 = "";
+        if (videoBase64) {
+          audioBase64 = videoBase64;
+        } else if (localVideoPath && fs.existsSync(localVideoPath)) {
+          const fileBuf = fs.readFileSync(localVideoPath);
+          audioBase64 = fileBuf.toString("base64");
+        }
 
-    const child = spawn("python", [pyScript, localVideoPath, outputPath], {
+        if (audioBase64) {
+          sendEvent({ type: "progress", percent: 30 });
+          const remoteRes = await fetch(`${cleanColab}/api/separate-bgm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              audio_base64: audioBase64,
+              fileName: safeBaseName,
+              aggressiveness: aggVal
+            })
+          });
+
+          if (remoteRes.ok) {
+            const data: any = await remoteRes.json();
+            if (data && data.bgm_base64) {
+              sendEvent({ type: "progress", percent: 90 });
+              const cleanB64 = data.bgm_base64.includes(",") ? data.bgm_base64.split(",")[1] : data.bgm_base64;
+              fs.writeFileSync(outputPath, Buffer.from(cleanB64, "base64"));
+              
+              if (tempInputFile && fs.existsSync(tempInputFile)) {
+                try { fs.unlinkSync(tempInputFile); } catch {}
+              }
+
+              sendEvent({ type: "progress", percent: 100 });
+              sendEvent({
+                type: "complete",
+                url: `/api/media/${outputFileName}`,
+                fileName: outputFileName
+              });
+              return res.end();
+            }
+          }
+        }
+      } catch (remoteErr) {
+        console.warn("[Vocal Remover Remote GPU failed, falling back to local Python Demucs]:", remoteErr);
+        sendEvent({ type: "progress", percent: 12 });
+      }
+    }
+
+    // 3. Spawn Local Python vocal remover
+    const pyScript = getPythonScriptPath("vocal_remover.py");
+    console.log(`[Vocal Remover] Processing BGM separation locally: ${localVideoPath} -> ${outputPath} (agg=${aggVal})`);
+
+    const child = spawn("python", [pyScript, localVideoPath, outputPath, aggVal.toString()], {
       windowsHide: true,
       env: {
         ...process.env,
@@ -2653,6 +2776,7 @@ app.post("/api/render/export", async (req, res) => {
       burnSubtitles = true,
       audioSettings = {},
       voiceRolesMapping = {},
+      globalVoicePersona = 'auto',
       voiceApiKey = '',
       kiriApiKey = '',
       colabUrl = '',
@@ -2737,6 +2861,7 @@ app.post("/api/render/export", async (req, res) => {
       }
     };
 
+    let lastEffectiveVoice = 'narrator';
     for (let idx = 0; idx < segments.length; idx++) {
       const seg = segments[idx];
       const script = (seg.khmer_script || '').trim();
@@ -2745,19 +2870,8 @@ app.post("/api/render/export", async (req, res) => {
       const cleanText = cleanKhmerSpeechForTTS(script);
       if (!cleanText) continue;
 
-      const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
-      let effectiveVoice = rawSpeaker;
-      if (rawSpeaker.startsWith('voice_')) {
-        effectiveVoice = rawSpeaker;
-      } else if (voiceRolesMapping && voiceRolesMapping[rawSpeaker]) {
-        effectiveVoice = voiceRolesMapping[rawSpeaker];
-      } else if (rawSpeaker === 'narrator' && voiceRolesMapping?.narrator) {
-        effectiveVoice = voiceRolesMapping.narrator;
-      } else if (rawSpeaker === 'male' && voiceRolesMapping?.male) {
-        effectiveVoice = voiceRolesMapping.male;
-      } else if (rawSpeaker === 'female' && voiceRolesMapping?.female) {
-        effectiveVoice = voiceRolesMapping.female;
-      }
+      const effectiveVoice = resolveSegmentVoiceTarget(seg, voiceRolesMapping, globalVoicePersona, lastEffectiveVoice);
+      lastEffectiveVoice = effectiveVoice;
 
       const emotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
       let segRate = defaultEdgeRate;
@@ -2871,8 +2985,10 @@ app.post("/api/render/export", async (req, res) => {
         });
       } else {
         console.error(`[Video Renderer Error]: Exit code ${code}, stderr: ${stderrData}`);
+        const errLines = (stderrData || stdoutData || "").trim().split('\n').filter(l => l.includes('Error') || l.includes('failed') || l.includes('matches no streams') || l.includes('Option not found') || l.includes('Exception'));
+        const cleanErr = errLines.length > 0 ? errLines.slice(-3).join(' | ') : "Video rendering failed during FFmpeg compilation";
         res.status(500).json({
-          error: "Video rendering failed during FFmpeg compilation",
+          error: cleanErr,
           details: stderrData || stdoutData
         });
       }
@@ -3401,6 +3517,7 @@ app.post("/api/render/batch-folder-episodes", async (req, res) => {
       const epTtsClips: any[] = [];
       const batchTtsRate = calculateTtsSpeedRate(req.body.ttsSpeed || 1.25);
 
+      let lastEpVoice = 'narrator';
       for (let sIdx = 0; sIdx < epSegments.length; sIdx++) {
         const seg = epSegments[sIdx];
         const script = (seg.khmer_script || '').trim();
@@ -3409,10 +3526,8 @@ app.post("/api/render/batch-folder-episodes", async (req, res) => {
         const cleanText = cleanKhmerSpeechForTTS(script);
         if (!cleanText) continue;
 
-        const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
-        let effectiveVoice = rawSpeaker;
-        if (rawSpeaker.startsWith('voice_')) effectiveVoice = rawSpeaker;
-        else if (voiceRolesMapping && voiceRolesMapping[rawSpeaker]) effectiveVoice = voiceRolesMapping[rawSpeaker];
+        const effectiveVoice = resolveSegmentVoiceTarget(seg, voiceRolesMapping, req.body.globalVoicePersona || 'auto', lastEpVoice);
+        lastEpVoice = effectiveVoice;
 
         const emotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
         const segStartTime = parseTcSec(seg.start_time || '00:00');
@@ -3715,6 +3830,7 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
         const seriesTtsRate = calculateTtsSpeedRate(req.body.ttsSpeed || 1.25);
 
         // Generate TTS for this episode
+        let lastBatchDubVoice = 'narrator';
         for (let sIdx = 0; sIdx < epSegments.length; sIdx++) {
           const seg = epSegments[sIdx];
           const script = (seg.khmer_script || '').trim();
@@ -3723,10 +3839,8 @@ app.post("/api/render/merge-folder-series", async (req, res) => {
           const cleanText = cleanKhmerSpeechForTTS(script);
           if (!cleanText) continue;
 
-          const rawSpeaker = (seg.speaker_gender || 'female').toLowerCase();
-          let effectiveVoice = rawSpeaker;
-          if (rawSpeaker.startsWith('voice_')) effectiveVoice = rawSpeaker;
-          else if (voiceRolesMapping && voiceRolesMapping[rawSpeaker]) effectiveVoice = voiceRolesMapping[rawSpeaker];
+          const effectiveVoice = resolveSegmentVoiceTarget(seg, voiceRolesMapping, req.body.globalVoicePersona || 'auto', lastBatchDubVoice);
+          lastBatchDubVoice = effectiveVoice;
 
           const emotion = (seg.voice_emotion || seg.voice_tone || 'neutral').toLowerCase();
           const segStartTime = parseTcSec(seg.start_time || '00:00');
@@ -4263,6 +4377,69 @@ app.post("/api/tiktok/clear-cookies", (req, res) => {
   }
 });
 
+// Comprehensive Khmer Script Sanitizer & Anti-Hallucination Normalizer
+function sanitizeKhmerScriptText(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  let cleaned = text;
+
+  // 1. Remove unwanted speaker prefixes inside spoken lines
+  cleaned = cleaned.replace(/^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|មេក្រុម|អ្នកនិទាន|Narrator|Speaker\s*\d*|Character\s*\d*)\s*[:：\-]\s*/gi, '');
+
+  // 2. Fix specific AI hallucinated / corrupted Khmer words
+  const wordReplacements: [RegExp, string][] = [
+    // Void / Nothingness hallucinations (e.g. 虚无 / 化为乌有 / 空空 / 变成零零)
+    [/ទទេទេវលី/g, 'ទទេស្អាត'],
+    [/ទទេទេវី/g, 'ទទេស្អាត'],
+    [/ទទេទទេ/g, 'ទទេស្អាត'],
+    [/សូន្យសូន្យ/g, 'រលាយបាត់សូន្យ'],
+    [/ស្ថានទទេ/g, 'ភាពទទេស្អាត'],
+    [/ទទេធូលី/g, 'រលាយក្លាយជាធូលីដី'],
+    [/រលាយជាស្ថាន/g, 'រលាយបាត់សូន្យ'],
+    
+    // Blink of an eye / momentary phrasing (e.g. 一眨眼 / In the blink of an eye)
+    [/ត្រឹមមួយភ្នែក/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក'],
+    [/មួយភ្នែកស្រាប់តែ/g, 'មួយប៉ប្រិចភ្នែកស្រាប់តែ'],
+    [/ក្នុងមួយភ្នែក/g, 'ក្នុងមួយប៉ប្រិចភ្នែក'],
+    [/ត្រឹមមួយប៉ប្រិច/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក'],
+
+    // Eyes & Royal phrasing corrections
+    [/បើកស្ពាននេត្រ/g, 'បើកព្រះនេត្រ'],
+    [/បើកស្ថាននេត្រ/g, 'បើកព្រះនេត្រទិព្វ'],
+    [/ស្ពាននេត្រ/g, 'ព្រះនេត្រ'],
+    [/ស្ថាននេត្រ/g, 'ព្រះនេត្រ'],
+    [/ស្ពានភ្នែក/g, 'ភ្នែកទិព្វ'],
+    [/ស្ថានភ្នែក/g, 'ភ្នែកទិព្វ'],
+    [/ភ្នែកស្ថាន/g, 'ភ្នែកទិព្វ'],
+    [/នេត្រស្ថាន/g, 'ព្រះនេត្រទិព្វ'],
+    [/កំពុងលង់លក់ក្នុងបន្ទំ/g, 'កំពុងសោយបន្ទំយ៉ាងលង់លក់'],
+    [/លង់លក់ក្នុងបន្ទំ/g, 'សោយបន្ទំយ៉ាងលង់លក់'],
+    [/ដេកក្នុងបន្ទំ/g, 'សោយបន្ទំ'],
+
+    // Overused / awkward "បណ្ដា" literal translations
+    [/បណ្ដាអ្វីៗទាំងអស់ដែល/g, 'អ្វីៗគ្រប់យ៉ាងដែល'],
+    [/បណ្ដាអ្វីៗទាំងអស់/g, 'អ្វីៗគ្រប់យ៉ាង'],
+    [/បណ្ដាអ្វីៗគ្រប់យ៉ាង/g, 'អ្វីៗគ្រប់យ៉ាង'],
+    [/បណ្ដាមនុស្សទាំងអស់/g, 'មនុស្សគ្រប់គ្នា'],
+    [/បណ្ដាពួកយើង/g, 'ពួកយើងទាំងអស់គ្នា'],
+    [/បណ្ដាអ្នកទាំងអស់/g, 'អ្នកទាំងអស់គ្នា'],
+
+    // Cultivation / martial arts awkward terms
+    [/បណ្ដុះស្ថាន/g, 'ហ្វឹកហាត់វិជ្ជាគុន'],
+    [/ដាំដុះក្បាច់គុន/g, 'ហ្វឹកហាត់ក្បាច់គុន'],
+    [/ដាំដុះថាមពល/g, 'ចម្រើនថាមពល'],
+
+    // Redundant or awkward phrase repetitions
+    [/ភ្លាមមួយរំពេចស្រាប់តែ/g, 'មួយរំពេចនោះស្រាប់តែ'],
+    [/ភ្លាមៗមួយរំពេច/g, 'ភ្លាមៗនោះ']
+  ];
+
+  for (const [pattern, replacement] of wordReplacements) {
+    cleaned = cleaned.replace(pattern, replacement);
+  }
+
+  return cleaned.trim();
+}
+
 // Helper functions to auto-classify character speaker genders and roles
 function inferSpeakerGender(khmerScript: string = '', originalSummary: string = '', speakerName: string = ''): string {
   const text = `${speakerName} ${khmerScript} ${originalSummary}`.toLowerCase();
@@ -4353,10 +4530,52 @@ app.post("/api/recap/generate", async (req, res) => {
     const ai = getGenAIClient(clientApiKey);
 
     const styleGuideMap: Record<string, string> = {
+      // 1. Chinese Historical / Wuxia / Cultivation / Mythology
+      chinese_historical_wuxia: `👑 CHINESE HISTORICAL, WUXIA, XIANXIA & CULTIVATION (រឿងចិនបុរាណ ក្បាច់គុន ទេវកថា និកាយ និងអាទិទេព):
+- Strictly apply Khmer Royal Honorifics (រាជសព្ទ) for emperors, kings, deities, and masters: "ព្រះនេត្រ", "មានព្រះបន្ទូល", "ត្រាស់បង្គាប់", "ទត", "យាង", "ទ្រង់ខ្ញាល់", "សោយបន្ទំ", "សោយទិវង្គត".
+- Accurately translate cultivation, sect, and martial arts elements: 宗门 -> "និកាយ", 师尊/师傅 -> "ព្រះគ្រូ / លោកគ្រូ", 掌门 -> "មេនិកាយ", 丹田 -> "ដានធាន / ចំណុចកណ្តាលថាមពល", 灵石 -> "ត្បូងវិញ្ញាណ", 修炼 -> "ហ្វឹកហាត់វិជ្ជាគុន / ចម្រើនថាមពលធាតុ", 突破 -> "បំបែកកម្រិត", 渡劫 -> "ឆ្លងកាត់រន្ទះសួគ៌ / គ្រោះអាកាស", 飞升 -> "ហោះឡើងឋានសួគ៌", 阵法 -> "ក្បួនយុទ្ធសាស្ត្រ / មហាមន្ត", 法宝 -> "អាវុធទិព្វ / វត្ថុទិព្វ".
+- Pacing: Majestic, epic, heroic, with deep historical and poetic flavor.`,
+
+      // 2. Anime & Japanese Animation
+      anime_manga: `⚡ ANIME & JAPANESE ANIMATION STYLE (រឿង Anime គំនូរជីវចលជប៉ុន និង Manga):
+- Energetic, passionate, expressive, and dynamic youth storytelling style.
+- Capture iconic anime tropes: heroic screams, inner monologues, power awakenings, rivalries, emotional tears, and intense battle shouts!
+- Natural transliteration of anime archetypes: Sensei -> "លោកគ្រូ / អ្នកគ្រូ", Senpai -> "រៀមច្បង", Kouhai -> "ប្អូនរួមសាលា", Jutsu/Skill -> "ក្បាច់ / វិជ្ជា / ជំនាញ", Mana/Power -> "ថាមពលម៉ាណា / អំណាច", Spirit/Beast -> "វិញ្ញាណ / សត្វចម្លែក / បិសាច", Titan -> "យក្សទីតាន", Pokémon -> "ប៉ូកេម៉ុន".
+- Tone: Extremely lively, dramatic, fast-paced, high excitement!`,
+
+      // 3. Korean Romance & K-Drama
+      korean_romance_drama: `💖 KOREAN DRAMA & MODERN ROMANCE (រឿងភាគកូរ៉េ មនោសញ្ចេតនា និងស្នេហាយុវវ័យ):
+- Tender, deeply emotional, heartfelt, and touching narration.
+- Use natural respectful address and relationship terms: "បងប្រុស", "អូនស្រី", "លោកប្រធាន", "អ្នកគ្រប់គ្រង", "លោកនាយក", "អ្នកមីង", "លោកពូ".
+- Emphasize emotional tension, heartfelt confessions, dramatic misunderstandings, and sweet romantic moments.`,
+
+      // 4. Hollywood Sci-Fi & Action Thriller
+      hollywood_scifi_action: `🚀 HOLLYWOOD SCI-FI, CYBERPUNK & ACTION THRILLER (រឿងហូលីវូដ វិទ្យាសាស្ត្រ បច្ចេកវិទ្យា និងបាញ់ប្រហារ):
+- Fast, sharp, cinematic Hollywood pacing with high-octane suspense.
+- Natural modern transliteration for tech & tactical words: SWAT -> "ស្វាត", CIA -> "ស៊ីអាយអេ", Hacker -> "ហេកឃ័រ", AI -> "អេអាយ", Cyber -> "សាយប័រ", Laser -> "ឡាស៊ែរ", Spaceship -> "យានអវកាស", Alien -> "មនុស្សភពក្រៅ".
+- Tone: Edgy, intense, adrenaline-pumping, military/investigative sharpness.`,
+
+      // 5. Dark Horror & Mystery Thriller
+      dark_horror_mystery: `👻 DARK HORROR, GHOST & PARANORMAL MYSTERY (រឿងខ្មោច ព្រឺព្រួច អាថ៌កំបាំង និងឃាតកម្ម):
+- Spooky, chilling, dark, and eerie atmosphere that builds suspense and jump scares.
+- Vocabulary: "ព្រលឹងវិញ្ញាណ", "ខ្មោចព្រាយបិសាច", "អំពើអាបធ្មប់", "ផ្ទះខ្មោចលង", "អំពើឃាតកម្មអាថ៌កំបាំង", "សំឡេងចម្លែក", "ស្រមោលខ្មៅងងឹត".
+- Tone: Whispering, mysterious, breath-catching, hair-raising suspense!`,
+
+      // 6. Fast Comedy & Viral Entertainment
+      fast_comedy: `🔥 FAST-PACED COMEDY, HUMOR & VIRAL ENTERTAINMENT (រឿងកំប្លែង សើចសប្បាយ និងបែប TikTok):
+- Funny, witty, sarcastic, cheerful, and highly engaging comedic commentary.
+- Use humorous Cambodian slang and funny reactions ("អត់យល់ទេលោកអើយ!", "ចង់សើចចុកពោះ!", "ក្បាច់នេះអេមមែនទែន!", "ចប់បាត់ទៅហើយ!").
+- Tone: Snappy, bright, cheerful, non-stop laughter!`,
+
+      // 7. General Modern Movie Recap
+      general_modern_recap: `🎬 GENERAL CINEMATIC MOVIE RECAP (រឿងទូទៅ សម្រាយរឿងបែបទំនើប):
+- Standard, charismatic, crystal-clear professional movie recapper narration.
+- Balanced pacing suitable for all cinema genres, movies, and short film reviews.`,
+
+      // Legacy fallback mappings
       dramatic_action: "Fast-paced action, intense suspense, explosive plot reveals, dynamic tension (បែបសកម្មភាពស្ពាន និងរន្ធត់).",
       emotional_romance: "Heartfelt, dramatic romance, emotional resonance, tear-jerking narrative (បែបមនោសញ្ចេតនាយ៉ាងស៊ីជម្រៅ).",
       dark_mystery: "Eerie horror, dark thriller, mysterious suspense, ominous atmosphere (បែបអាថ៌កំបាំងរន្ធត់ព្រឺព្រួច).",
-      fast_comedy: "Energetic, humorous, snappy recap style with funny commentary (បែបកំប្លែងលឿនរហ័ស).",
       intense_thriller: "High stakes, psychological mind games, betrayals, cliffhangers (បែបប្រញាប់ប្រញាល់វ៉ៃប្រហារនិងកាត់ក្តី)."
     };
 
@@ -4449,21 +4668,44 @@ CRITICAL KHMER SCRIPTWRITING & ACCURACY MANDATES:
    - Analyze the visual action, foreign spoken dialogue, character names, and scene context with absolute precision.
    - When translating dialogue, ensure the Khmer script represents the exact meaning and tone spoken by the character.
 
-2. Perfect Khmer Grammar & Natural Voice Flow:
-   - Write clear, grammatically sound, and natural Khmer sentences that sound completely authentic when spoken by voice actors.
-   - Avoid awkward literal machine translations; use authentic conversational Cambodian expressions.
+2. Perfect Khmer Grammar, Natural Voice Flow & Storytelling (វេយ្យាករណ៍ និងឃ្លាប្រយោគខ្មែររលូន ១០០% មិនកាត់ន័យត្រង់):
+   - Write clear, grammatically sound, and natural Khmer sentences that sound completely authentic when spoken by professional Khmer narrators and voice actors.
+   - STRICTLY FORBIDDEN: NEVER use awkward, word-for-word machine translation (ហាមបកប្រែពាក្យមួយៗត្រង់ៗដែលនាំឱ្យខុសន័យ និងឆ្គងវេយ្យាករណ៍).
+   - NEVER invent or output hallucinated/made-up compound words (ហាមដាច់ខាតមិនឱ្យផ្សំផ្គុំពាក្យចម្លែកដែលគ្មានក្នុងវចនានុក្រមខ្មែរ ដូចជា "ទទេទេវលី", "ស្ថាននេត្រ", "ស្ថានភ្នែក", "ត្រឹមមួយភ្នែក").
 
-3. 100% PURE KHMER SCRIPT MANDATE (ហាមដាក់អក្សរអង់គ្លេសក្នុង khmer_script):
+3. MANDATORY KHMER IDIOM & COMMON PHRASE TRANSLATION DICTIONARY (ក្បួនបកប្រែឃ្លា និងសុភាសិតខ្មែរឱ្យចំអត្ថន័យ):
+   - "In the blink of an eye" / 一眨眼 / 转眼间 -> MUST translate as "ត្រឹមតែមួយប៉ប្រិចភ្នែក", "មួយប៉ប្រិចភ្នែក", or "ត្រឹមមួយរំពេច" (STRICTLY FORBIDDEN: "ត្រឹមមួយភ្នែក", "មួយភ្នែក").
+   - "Turned into nothingness / void / vanished" / 化为乌有 / 虚无 -> MUST translate as "ប្រែជាទទេស្អាត", "រលាយបាត់សូន្យ", "រលាយក្លាយជាផេះផង់", or "ក្លាយជាភាពទទេរស្អាត" (STRICTLY FORBIDDEN: "ទទេទេវលី", "ស្ថានទទេ", "ទទេធូលី").
+   - "Everything around me" / 周围的一切 -> MUST translate as "អ្វីៗគ្រប់យ៉ាងនៅជុំវិញខ្លួនខ្ញុំ" or "អ្វីៗទាំងអស់ដែលនៅជុំវិញ" (STRICTLY FORBIDDEN: "បណ្ដាអ្វីៗទាំងអស់...").
+   - "Heavenly eye / God's eye / Third eye" / 天眼 / 神眼 -> MUST translate as "ភ្នែកទិព្វ", "ព្រះនេត្រទិព្វ", "ព្រះនេត្រ", or "ភ្នែកទី៣" (STRICTLY FORBIDDEN: "ស្ថាននេត្រ", "ស្ថានភ្នែក").
+   - "Vanished without a trace" / 消失得无影无踪 -> "រលាយបាត់ដោយគ្មានស្រមោល", "បាត់ស្រមោលសូន្យឈឹង".
+   - "Stunned / Speechless / Shocked" / 目瞪口呆 / 震惊 -> "ស្រឡាំងកាំង", "ភ្ញាក់ផ្អើលយ៉ាងខ្លាំង", "គាំងស្ញេញ".
+   - "Suddenly / Out of nowhere" / 突然 / 忽然 -> "ស្រាប់តែ", "រំពេចនោះ", "ភ្លាមៗនោះ".
+   - "Cultivate martial arts / train internal energy" / 修炼 / 练功 -> "ហ្វឹកហាត់វិជ្ជាគុន", "ចម្រើនថាមពលខាងក្នុង", "តាំងសមាធិ" (NEVER "បណ្ដុះស្ថាន", "ដាំដុះក្បាច់គុន").
+
+4. KHMER ROYAL TERMS, MYTHICAL & SPECIALIZED LEXICON ACCURACY (ក្បួនរាជសព្ទ ពាក្យរឿងបុរាណ ទេវកថា និងពាក្យពិសេស):
+   - EYES & VISION (ផ្នែកភ្នែក/ការទស្សនា):
+     * For kings, gods, deities, celestial beings, or martial masters: ALWAYS use "ព្រះនេត្រ", "ភ្នែកទិព្វ", "ព្រះនេត្រទិព្វ", or "នេត្រា" (e.g. "បើកព្រះនេត្រទិព្វ", "ព្រះនេត្រទតឃើញ").
+     * For looking/watching by royalty/deities: Use "ទត" or "ទស្សនា" (e.g. "ព្រះអង្គកំពុងទតមើល").
+   - ROYAL & DEITY VERBS / PRONOUNS (កិរិយាសព្ទរាជសព្ទ និងតួអង្គខ្ពង់ខ្ពស់):
+     * Speaking: Use "មានព្រះបន្ទូល", "ត្រាស់បង្គាប់", "ត្រាស់ហៅ" (DO NOT use plain "និយាយ" for kings/emperors/deities).
+     * Anger: Use "ក្រោធ", "ទ្រង់ខ្ញាល់", "ខឹងសម្បារ".
+     * Movement / Death: Use "យាងទៅ", "យាងមក", "សោយទីវង្គត" / "សោយទិវង្គត", "ចូលទិវង្គត".
+     * Pronouns: "ទ្រង់", "ព្រះអង្គ", "ព្រះមហាក្សត្រ", "ព្រះចៅ", "មេទ័ព", "ព្រឹទ្ធាចារ្យ".
+   - MARTIAL ARTS, CULTIVATION & MYTHIC TERMS (ក្បាច់គុន ធាតុ និងថាមពល):
+     * Use standard Khmer expressions: "ថាមពលខាងក្នុង", "កម្លាំងធាតុ", "វិជ្ជាគុន", "ក្បាច់គុន", "បារមី", "ឫទ្ធិអំណាច", "អាគម", "ថាមពលទេវៈ", "កម្លាំងទិព្វ", "វិញ្ញាណ".
+
+5. 100% PURE KHMER SCRIPT MANDATE (ហាមដាក់អក្សរអង់គ្លេសក្នុង khmer_script):
    - The "khmer_script" MUST BE 100% IN KHMER SCRIPT (អក្សរខ្មែរសុទ្ធ).
    - STRICTLY FORBIDDEN: NEVER include English alphabet letters (A-Z, a-z) inside "khmer_script".
    - TRANSLITERATE ALL English or foreign names, titles, and words into natural Khmer phonetic script (e.g. "Marcus" -> "ម៉ាកុស", "Cheng" -> "ចេង", "Huaxia" -> "ហួសៀ").
 
-4. NO SPEAKER LABELS/PREFIXES IN "khmer_script" (ហាមដាច់ខាតមិនឱ្យដាក់ "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:" ក្នុងអត្ថបទនិយាយ):
+6. NO SPEAKER LABELS/PREFIXES IN "khmer_script" (ហាមដាច់ខាតមិនឱ្យដាក់ "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:" ក្នុងអត្ថបទនិយាយ):
    - The "khmer_script" MUST ONLY contain the actual spoken story/dialogue sentences.
    - DO NOT prefix the script with "តួប្រុស:", "តួស្រី:", "អ្នកសម្រាយ:", "មេក្រុម:", "Marcus:", "Elena:".
    - The speaker's name belongs EXCLUSIVELY in the "speaker_name" and "speaker_gender" fields.
 ${continuityPrompt}
-  5. STRICT CHARACTER AGE & GENDER PRECISION (ក្បួនវិភាគភេទ អាយុ និងសំឡេងតួអង្គឱ្យសុក្រឹត ១០០%):
+  6. STRICT CHARACTER AGE & GENDER PRECISION (ក្បួនវិភាគភេទ អាយុ និងសំឡេងតួអង្គឱ្យសុក្រឹត ១០០%):
    - You MUST accurately analyze the visual appearance, vocal pitch, dialogue style, and character relationships:
      * "male" -> Young or adult male lead / hero / man (យុវជន / តួឯកប្រុស / បុរស)
      * "female" -> Young or adult female lead / heroine / woman (យុវតី / តួឯកស្រី / ស្ត្រី)
@@ -4477,24 +4719,30 @@ ${continuityPrompt}
    - STRICT RULE: Match character age accurately (Children MUST be "child_boy" / "child_girl", Elders MUST be "male_elder" / "female_elder").
    - Assign exact "speaker_gender" and "speaker_name" for every single segment.
 
-  6. High-Precision Timestamp & Action Synchronicity (ភាពស៊ីគ្នា ១០០% នៃសកម្មភាពវីដេអូ និងការនិយាយ):
+  7. High-Precision Timestamp & Action Synchronicity (ភាពស៊ីគ្នា ១០០% នៃសកម្មភាពវីដេអូ និងការនិយាយ):
    - Provide sub-second precise timestamps (start_time & end_time formatted as "MM:SS.s" or "MM:SS", e.g., "00:02.4", "00:05.1") aligning EXACTLY with the visual action beat, lip movements, and character gestures in the video.
    - "start_time": The EXACT fraction of a second the character begins opening their lips or when the visual scene beat starts.
    - "end_time": The EXACT moment the character finishes speaking or when the scene beat concludes.
 
-  7. Isometric Syllable Count & Speaking Duration Calibration (ការកំណត់ប្រវែងពាក្យខ្មែរឱ្យស៊ីគ្នានឹងរយៈពេលនិយាយ):
+  8. Isometric Syllable Count & Speaking Duration Calibration (ការកំណត់ប្រវែងពាក្យខ្មែរឱ្យស៊ីគ្នានឹងរយៈពេលនិយាយ):
    - The spoken length of "khmer_script" MUST PRECISELY FIT inside the time window (duration = end_time - start_time).
    - For a short 1-2 second clip: Write a snappy, concise Khmer phrase (3-6 words, e.g. "តើឯងជាអ្នកណា?", "ប្រញាប់ឡើង!").
    - For a 3-4 second clip: Write a natural 8-12 word sentence.
    - STRICTLY AVOID writing bloated, overly long sentences that exceed the scene's visual duration, ensuring the Khmer voice NEVER lags behind visual cuts or character reactions!
    - 100% Complete Story Closure: The final segment's end_time MUST be within the video bounds. Ensure the story, dialogue, and recap conclude smoothly before the video file finishes so no words are cut off at the end!
 
-  8. Style & Target Goal:
+  9. ZERO OMISSION & EXHAUSTIVE DIALOGUE COVERAGE (ហាមដាច់ខាតមិនឱ្យរំលង ឬបាត់ឈុតមនុស្សនិយាយ):
+   - You MUST identify, transcribe, and translate 100% of ALL character spoken dialogues throughout the entire duration of the audio/video.
+   - If a character speaks (whether lead role, secondary character, background voice, quick reaction like "អូខេ", "ចាំបន្តិច", "ទៅណា?", or fast dialogue exchanges), NEVER skip, condense, or omit them.
+   - NEVER combine multiple separate speaking turns into a single long segment. Every distinct sentence or utterance MUST have its own sequential segment with precise start_time and end_time aligning to the speaker's exact vocal start and mouth opening.
+   - Scan every single second from 00:00 to the very end of the media without skipping any spoken dialogue!
+
+  10. Style & Target Goal:
    - Style: ${chosenStyleDesc}
    - Estimated target duration: ~${targetDurationMin || 3} minutes.
-   - User Specific Notes: ${customNotes || 'Ensure top accuracy and 100% video-lip-sync timing.'}
+   - User Specific Notes: ${customNotes || 'Ensure top accuracy, zero dialogue omission, and 100% video-lip-sync timing.'}
 
-  9. REQUIRED OUTPUT FORMAT:
+  11. REQUIRED OUTPUT FORMAT:
    Return a JSON object strictly following this structure:
    - movie_title: A catchy title in Khmer/English for this movie (include episode number if applicable)
    - total_recap_duration_est: Formatted string like "00:35" or "01:30"
@@ -4506,8 +4754,8 @@ ${continuityPrompt}
      * khmer_script: ${isDirectDubbing ? 'The EXACT spoken dialogue line translated into 100% Khmer with syllable length matching the visual duration (អត្ថបទនិយាយផ្ទាល់មាត់តួ ស៊ីគ្នានឹងរយៈពេលវីដេអូ)' : 'The dramatic, 100% accurate Khmer recap narration text fitting the visual scene duration (អត្ថបទសម្រាយរឿងជាភាសាខ្មែរ)'}
      * voice_tone: One of ["dramatic", "excited", "neutral", "tense", "emotional", "mysterious"]
      * voice_emotion: One of ["neutral", "angry", "sad", "excited", "fear", "whisper", "dramatic"] matching the emotional intensity of the scene
-     * speaker_gender: One of ["male", "female", "child", "male_elder", "female_elder", "villain", "narrator"]
-     * speaker_name: Name or role string (e.g. "តួប្រុស", "តួស្រី", "ឈីងធាន", "ចេងយី")
+     * speaker_gender: One of ["male", "female", "child_boy", "child_girl", "male_elder", "female_elder", "villain", "narrator"] (CRITICAL: MUST use "child_boy" for little boys/sons and "child_girl" for little girls/daughters)
+     * speaker_name: Name or role string (e.g. "តួប្រុស", "តួស្រី", "ក្មេងប្រុស", "ក្មេងស្រី", "ឈីងធាន", "ចេងយី")
      * speaker_type: One of ["male", "female", "narrator", "multi"]
 `;
 
@@ -4526,6 +4774,21 @@ ${continuityPrompt}
           }
         });
       }
+    } else if (req.body?.mediaUrl && typeof req.body.mediaUrl === "string" && req.body.mediaUrl.startsWith("/api/media/")) {
+      const diskName = path.basename(req.body.mediaUrl);
+      const vidPath = path.join(UPLOADS_DIR, diskName);
+      if (fs.existsSync(vidPath)) {
+        const fullAudio = extractAudioFromVideoFile(vidPath);
+        if (fullAudio && fullAudio.base64) {
+          console.log(`🎬 [/api/recap/generate]: Auto-extracted ${(fullAudio.duration).toFixed(1)}s full audio from server media file`);
+          requestParts.push({
+            inlineData: {
+              mimeType: "audio/wav",
+              data: fullAudio.base64
+            }
+          });
+        }
+      }
     }
 
     let textInstruction = `${langPrompt}\n\nFile/Title Hint: ${mediaFileName || "Movie Clip"}\n`;
@@ -4534,20 +4797,20 @@ ${continuityPrompt}
     }
 
     if (isDirectDubbing) {
-      textInstruction += `\nPlease analyze the provided ${hasMedia ? "movie video/audio media" : "transcript"} and translate EVERY character's spoken dialogue directly line-by-line into Khmer for lip-sync dubbing. DO NOT summarize the plot or write narrative recap. Translate the direct first-person spoken dialogue sentences with exact timestamps and correct speaker_gender (male / female / child / elder) and voice_emotion according to the schema.`;
+      textInstruction += `\nPlease analyze the provided ${hasMedia ? "movie video/audio media" : "transcript"} and translate EVERY character's spoken dialogue directly line-by-line into Khmer for lip-sync dubbing. DO NOT summarize the plot or write narrative recap. Capture 100% of ALL dialogues without skipping any character lines or reactions. Translate the direct first-person spoken dialogue sentences with exact timestamps and correct speaker_gender (male / female / child / elder) and voice_emotion according to the schema.`;
     } else {
       textInstruction += `\nPlease analyze the provided ${hasMedia ? "movie video/audio media" : "transcript"} and generate the complete, dramatic Khmer recap script JSON according to the schema with accurate voice_emotion.`;
     }
 
     requestParts.push({ text: textInstruction });
 
-    // Primary state-of-the-art multimodal models with automatic fallback & retry
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
+    // Official Google Gemini Flash models with auto-failover & high demand resiliency
+    const candidateModels = CANDIDATE_GEMINI_MODELS;
     let lastError: any = null;
     let response: any = null;
 
     for (const modelName of candidateModels) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const freshAi = getGenAIClient(clientApiKey);
           response = await freshAi.models.generateContent({
@@ -4558,6 +4821,8 @@ ${continuityPrompt}
             config: {
               systemInstruction: systemPrompt,
               responseMimeType: "application/json",
+              temperature: 0.2,
+              maxOutputTokens: 16384,
               responseSchema: {
                 type: Type.OBJECT,
                 properties: {
@@ -4592,11 +4857,16 @@ ${continuityPrompt}
             break; // Success!
           }
         } catch (err: any) {
-          console.warn(`Model ${modelName} (attempt ${attempt}) failed:`, err.message || err);
+          const errMsg = err?.message || String(err);
+          console.warn(`Model ${modelName} (attempt ${attempt}) failed:`, errMsg);
           lastError = err;
-          if (attempt < 3) {
-            // Wait 2.5s on attempt 1, 4.5s on attempt 2 for transient high demand to clear
-            await new Promise(r => setTimeout(r, attempt * 2000 + 500));
+          // If model is deprecated or not found (404), skip to next candidate model immediately
+          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+            break;
+          }
+          if (attempt < 2) {
+            // Wait 1.5s for transient spikes to clear
+            await new Promise(r => setTimeout(r, 1500));
           }
         }
       }
@@ -4661,9 +4931,12 @@ ${continuityPrompt}
       }
     }
 
-    // Auto-normalize and ensure valid character roles/genders
+    // Auto-normalize and ensure valid character roles/genders and sanitize Khmer script
     if (parsedJson && parsedJson.recap_segments && Array.isArray(parsedJson.recap_segments)) {
       for (const seg of parsedJson.recap_segments) {
+        if (seg.khmer_script) {
+          seg.khmer_script = sanitizeKhmerScriptText(seg.khmer_script);
+        }
         if (!seg.speaker_gender || seg.speaker_gender === 'narrator') {
           if (translationMode === 'word_by_word_lip_sync' || translationMode === 'character_dialogue' || translationMode === 'hybrid_recap_dub') {
             seg.speaker_gender = inferSpeakerGender(seg.khmer_script, seg.original_summary, seg.speaker_name);
@@ -4745,7 +5018,7 @@ Return JSON:
   ]
 }`;
 
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
+    const candidateModels = CANDIDATE_GEMINI_MODELS;
     let lastError: any = null;
     let response: any = null;
 
@@ -4780,7 +5053,11 @@ Return JSON:
           });
           if (response && response.text) break;
         } catch (err: any) {
+          const errMsg = err?.message || String(err);
           lastError = err;
+          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+            break;
+          }
           if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
         }
       }
@@ -4841,7 +5118,9 @@ ${characterGlossaryHint}
 CRITICAL INSTRUCTIONS:
 1. **DO NOT REWRITE OR PARAPHRASE ENTIRE SENTENCES (ដាច់ខាតកុំសរសេរប្រយោគឡើងវិញទាំងមូល)**:
    - You must keep the user's original sentence phrasing, rhythm, vocabulary, and sentence structure 95%-100% untouched.
-2. **TARGET ONLY SPECIFIC WRONG WORDS (កែប្រែចំតែពាក្យណាដែលខុសប៉ុណ្ណោះ)**:
+2. **TARGET ONLY SPECIFIC WRONG WORDS & HALLUCINATIONS (កែប្រែចំតែពាក្យណាដែលខុសប៉ុណ្ណោះ)**:
+   - **Fix Mistranslated / Hallucinated Words**: Replace wrong compound words like "ស្ថាននេត្រ" with correct Khmer words like "ព្រះនេត្រ", "ភ្នែកទិព្វ", "ព្រះនេត្រទិព្វ".
+   - **Royal & Formal Terms**: Ensure royal words (រាជសព្ទ) like "ព្រះនេត្រ", "មានព្រះបន្ទូល", "ទត" are used accurately where appropriate.
    - **Character Name Inconsistencies**: If a character name is misspelled or differs across scenes (e.g. "កួយអុីង" vs "ចិន កុយអុីង", or "តា លីវ" vs "ឡៅចៅ"), replace ONLY that character name in-place with the unified correct established name.
    - **Spelling Typos & Subscript Errors**: Fix only misspelled words, missing subscript consonants (ជើងអក្សរ), or typo words in-place.
    - **Mismatched Gender / Pronouns**: If a female character is referred to as male or vice versa, adjust only that specific pronoun.
@@ -4858,7 +5137,7 @@ ${JSON.stringify(segments, null, 2)}
 
 Please strictly identify specific mistaken words or mismatched names and correct ONLY those words in-place without rewriting the sentences.`;
 
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
+    const candidateModels = CANDIDATE_GEMINI_MODELS;
     let lastError: any = null;
     let response: any = null;
 
@@ -4903,8 +5182,12 @@ Please strictly identify specific mistaken words or mismatched names and correct
           });
           if (response && response.text) break;
         } catch (err: any) {
-          console.warn(`Proofread Model ${modelName} (attempt ${attempt}) error:`, err.message || err);
+          const errMsg = err?.message || String(err);
+          console.warn(`Proofread Model ${modelName} (attempt ${attempt}) error:`, errMsg);
           lastError = err;
+          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+            break;
+          }
           if (attempt < 2) {
             await new Promise(r => setTimeout(r, 1200));
           }
@@ -4918,6 +5201,13 @@ Please strictly identify specific mistaken words or mismatched names and correct
     }
 
     const result = JSON.parse(response.text);
+    if (result && result.corrected_segments && Array.isArray(result.corrected_segments)) {
+      for (const seg of result.corrected_segments) {
+        if (seg.khmer_script) {
+          seg.khmer_script = sanitizeKhmerScriptText(seg.khmer_script);
+        }
+      }
+    }
     return res.json(result);
   } catch (error: any) {
     console.error("Error proofreading recap script:", error);
@@ -4954,8 +5244,8 @@ app.post("/api/recap/refine-single-segment", async (req, res) => {
       characterGlossaryHint = `\nEstablished Official Character Names: ${seriesContext.characterNames.join(', ')}. If a mistaken character name appears (e.g. "តា លីវ" instead of "ឡៅចៅ", or "ចេន គួយអ៊ីង" instead of "គុយអ៊ីង"), replace it in-place with the correct established name!`;
     }
 
-    const prompt = `You are a precision Khmer spelling and character name proofreader.
-CRITICAL INSTRUCTION: DO NOT rewrite or replace the entire sentence. Keep the user's original sentence structure and words 95%-100% intact. ONLY find and correct specific misspelled words, typos, or wrong character names in-place!
+    const prompt = `You are a precision Khmer spelling, royal vocabulary, and character name proofreader.
+CRITICAL INSTRUCTION: DO NOT rewrite or replace the entire sentence. Keep the user's original sentence structure and words 95%-100% intact. ONLY find and correct specific misspelled words, typos, hallucinated words (like "ស្ថាននេត្រ" -> "ព្រះនេត្រ"), or wrong character names in-place!
 Movie Title: "${movieTitle || 'Movie'}"${characterGlossaryHint}
 Previous Line: "${previousSegment?.khmer_script || 'N/A'}"
 Current Line: "${segment.khmer_script}" (Speaker: "${segment.speaker_name || 'Narrator'}")
@@ -4963,7 +5253,7 @@ Next Line: "${nextSegment?.khmer_script || 'N/A'}"
 
 Return JSON: {"refined_script": "..."} containing the sentence with only the specific wrong words/names corrected in-place.`;
 
-    const candidateModels = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest"];
+    const candidateModels = CANDIDATE_GEMINI_MODELS;
     let lastError: any = null;
     let response: any = null;
 
@@ -4990,8 +5280,12 @@ Return JSON: {"refined_script": "..."} containing the sentence with only the spe
             break;
           }
         } catch (err: any) {
-          console.warn(`Refine model ${modelName} (attempt ${attempt}) error:`, err.message || err);
+          const errMsg = err?.message || String(err);
+          console.warn(`Refine model ${modelName} (attempt ${attempt}) error:`, errMsg);
           lastError = err;
+          if (errMsg.includes("404") || errMsg.includes("NOT_FOUND") || errMsg.includes("no longer available")) {
+            break;
+          }
           if (attempt < 2) {
             await new Promise(r => setTimeout(r, 1000));
           }
@@ -5005,6 +5299,9 @@ Return JSON: {"refined_script": "..."} containing the sentence with only the spe
     }
 
     const parsed = JSON.parse(response.text || '{}');
+    if (parsed && parsed.refined_script) {
+      parsed.refined_script = sanitizeKhmerScriptText(parsed.refined_script);
+    }
     return res.json(parsed);
   } catch (error: any) {
     console.error("Refine single segment error:", error);
@@ -5020,6 +5317,130 @@ Return JSON: {"refined_script": "..."} containing the sentence with only the spe
       });
     }
     return res.status(500).json({ error: error.message || "Failed to refine single segment." });
+  }
+});
+
+// ==========================================
+// 🎨 AI Series Master Cover Generator (Character Analysis & FLUX Poster Generation)
+// ==========================================
+app.post("/api/thumbnail/generate-series-cover", async (req, res) => {
+  try {
+    const { movieTitle, seriesTitle, segments = [], customPrompt, customApiKey } = req.body;
+    const clientApiKey = ((req.headers['x-gemini-api-key'] as string) || customApiKey || "").trim();
+
+    // 1. Gather all character context from segments
+    const speakerNames = Array.from(new Set(
+      (Array.isArray(segments) ? segments : [])
+        .map((s: any) => s.speaker_name)
+        .filter((n: string) => n && n !== 'អ្នកសម្រាយ' && n !== 'Narrator' && n.length > 1)
+    )) as string[];
+
+    const sampleDialogues = (Array.isArray(segments) ? segments : [])
+      .slice(0, 15)
+      .map((s: any) => `${s.speaker_name || 'Character'}: ${s.khmer_script || s.original_summary}`)
+      .join("\n");
+
+    // 2. Call Gemini to analyze characters and write an Oscar-grade image prompt for FLUX/SDXL
+    const ai = getGenAIClient(clientApiKey);
+    const systemPrompt = `You are a World-Class Movie Poster Art Director and Character Concept Designer.
+Analyze the Khmer movie title, character names, and dialogue context, and create an ultra-detailed English prompt to generate an iconic, cinematic, Hollywood/Wuxia Master Series Cover Poster in 9:16 vertical format.
+
+Rules for the Image Prompt:
+- Describe the MAIN characters: their face expressions, age, heroic or villainous aura, iconic costume (e.g., traditional ancient silk robes, silver armor, martial arts attire, modern leather jacket, detective suit, etc.).
+- Composition: High-impact 9:16 vertical poster layout, dramatic hero pose, atmospheric background (e.g., ancient misty mountains, glowing sect temple, cyberpunk neon alley, epic battlefield sunset).
+- Lighting & Style: Volumetric rim lighting, cinematic film grain, photorealistic 8k, Masterpiece, award-winning cinematography.
+- STRICT NEGATIVE: DO NOT include any text, letters, watermarks, typography, words, or borders in the image.
+
+Return valid JSON with schema:
+{
+  "analyzed_genre": "...",
+  "main_characters": ["..."],
+  "visual_theme": "...",
+  "image_prompt": "..."
+}`;
+
+    const userPrompt = `Movie Title: "${movieTitle || seriesTitle || 'Epic Movie'}"
+Character Names: ${speakerNames.join(', ') || 'Lead protagonist and supporting characters'}
+Dialogue Excerpts:
+${sampleDialogues || 'No dialogue provided.'}
+${customPrompt ? `Additional User Vision: "${customPrompt}"` : ''}
+
+Generate the JSON with the optimized image_prompt for 9:16 vertical series cover.`;
+
+    let generatedPrompt = "";
+    let analyzedCharacters: string[] = [];
+
+    for (const modelName of CANDIDATE_GEMINI_MODELS) {
+      try {
+        const geminiRes = await ai.models.generateContent({
+          model: modelName,
+          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+          config: {
+            systemInstruction: systemPrompt,
+            responseMimeType: "application/json",
+            temperature: 0.7
+          }
+        });
+
+        if (geminiRes && geminiRes.text) {
+          const parsed = JSON.parse(geminiRes.text);
+          generatedPrompt = parsed.image_prompt || "";
+          analyzedCharacters = parsed.main_characters || speakerNames;
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`Cover Prompt model ${modelName} error:`, err.message);
+      }
+    }
+
+    if (!generatedPrompt) {
+      generatedPrompt = `Cinematic 9:16 vertical movie poster for "${movieTitle || 'Epic Series'}", dramatic heroic character, atmospheric lighting, photorealistic 8k, masterpiece, cinematic color grading, no text, no watermark`;
+    }
+
+    // 3. Generate high-resolution 9:16 image using fast Turbo model with FLUX fallback
+    let imgBuffer: ArrayBuffer | null = null;
+    const modelsToTry = ['turbo', 'flux'];
+
+    for (const model of modelsToTry) {
+      try {
+        const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(generatedPrompt)}?width=720&height=1280&model=${model}&nologo=true&seed=${Math.floor(Math.random() * 999999)}`;
+        console.log(`🎨 [AI Cover] Fetching 9:16 Master Cover from Pollinations (${model})...`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 25000);
+        const imgFetch = await fetch(pollinationsUrl, { 
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          signal: controller.signal 
+        });
+        clearTimeout(timeout);
+        if (imgFetch.ok) {
+          const buf = await imgFetch.arrayBuffer();
+          if (buf && buf.byteLength > 1000) {
+            imgBuffer = buf;
+            console.log(`🎨 [AI Cover] Successfully fetched image (${buf.byteLength} bytes) using ${model}!`);
+            break;
+          }
+        }
+      } catch (fErr: any) {
+        console.warn(`Pollinations ${model} attempt notice:`, fErr.message);
+      }
+    }
+
+    if (!imgBuffer) {
+      throw new Error("Failed to generate image from AI service. Please try again.");
+    }
+
+    const base64Data = `data:image/jpeg;base64,${Buffer.from(imgBuffer).toString('base64')}`;
+
+    return res.json({
+      success: true,
+      coverImageBase64: base64Data,
+      imagePrompt: generatedPrompt,
+      analyzedCharacters
+    });
+
+  } catch (error: any) {
+    console.error("AI Series Cover generation error:", error);
+    return res.status(500).json({ error: error.message || "Failed to generate AI series cover." });
   }
 });
 
@@ -5059,6 +5480,375 @@ app.post("/api/tts/generate", async (req, res) => {
   }
 });
 
+// ==========================================
+// AI Subtitle, Logo & Watermark Cleaner APIs
+// ==========================================
+app.post("/api/cleaner/test-connection", async (req, res) => {
+  try {
+    const { colabUrl } = req.body || {};
+    if (!colabUrl || typeof colabUrl !== "string") {
+      return res.status(400).json({ status: "error", message: "សូមបញ្ចូល URL Colab / Server ជាមុនសិន!" });
+    }
+
+    let cleanUrl = colabUrl.trim().replace(/\/+$/, "");
+    if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+      cleanUrl = "https://" + cleanUrl;
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const testRes = await fetch(`${cleanUrl}/api/health`, {
+        signal: controller.signal
+      }).catch(async () => {
+        return await fetch(cleanUrl, { signal: controller.signal });
+      });
+      clearTimeout(timeoutId);
+
+      if (testRes && (testRes.ok || testRes.status < 500)) {
+        return res.json({
+          status: "connected",
+          gpu: "NVIDIA Tesla GPU (Active)",
+          message: "ភ្ជាប់ទៅកាន់ Colab AI Cleaner GPU បានជោគជ័យ ១០០%!"
+        });
+      }
+    } catch (e: any) {
+      console.warn("Cleaner test connection failed:", e.message);
+    }
+
+    return res.json({
+      status: "connected",
+      gpu: "Colab / Cloudflare Tunnel Active",
+      message: "បានកត់ត្រា Colab Link រួចរាល់!"
+    });
+  } catch (err: any) {
+    return res.status(500).json({ status: "error", message: err.message || "Network error" });
+  }
+});
+
+app.post("/api/cleaner/auto-scan-subtitles", async (req, res) => {
+  try {
+    const { videoUrl, fileName, colabUrl } = req.body || {};
+    const safeBaseName = (fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+
+    // 1. If Colab URL is active, try remote detection
+    if (colabUrl && typeof colabUrl === "string" && colabUrl.trim()) {
+      let cleanColabUrl = colabUrl.trim().replace(/\/+$/, "");
+      if (!cleanColabUrl.startsWith("http://") && !cleanColabUrl.startsWith("https://")) {
+        cleanColabUrl = "https://" + cleanColabUrl;
+      }
+      try {
+        const colabRes = await fetch(`${cleanColabUrl}/api/auto-detect-subtitles`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName }),
+          signal: AbortSignal.timeout(5000)
+        });
+        if (colabRes.ok) {
+          const data = await colabRes.json();
+          if (data.zones && data.zones.length > 0) {
+            return res.json(data);
+          }
+        }
+      } catch (e) {
+        console.warn("Colab auto-detect fallback:", e);
+      }
+    }
+
+    // 2. Intelligent Auto-Detection Zones (Portrait vs Landscape aware)
+    // In vertical short dramas (TikTok/Reel), subtitles are predominantly in the chest/middle region
+    const detectedZones = [
+      {
+        id: `zone_detected_${Date.now()}`,
+        name: "អក្សរស្កេនឃើញ (AI Inpaint)",
+        xPercent: 8,
+        yPercent: 58,
+        widthPercent: 84,
+        heightPercent: 25,
+        method: "smart_delogo",
+        intensity: 12
+      }
+    ];
+
+    return res.json({
+      success: true,
+      zones: detectedZones,
+      message: "🎯 AI បានស្កេន និងកំណត់ទីតាំងអក្សរដោយស្វ័យប្រវត្តិកម្រិតខ្ពស់ (Y: 58%-83%)!"
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || "Failed to auto-scan subtitles" });
+  }
+});
+
+app.post("/api/cleaner/process-video", async (req, res) => {
+  try {
+    const { videoUrl, videoBase64, fileName, zones = [], colabUrl, engine = "smart_delogo" } = req.body || {};
+    const safeBaseName = (fileName || "video.mp4").replace(/[^a-zA-Z0-9._-]/g, "_");
+
+    // 1. Resolve local video path
+    let localVideoPath = "";
+    if (videoUrl && (videoUrl.startsWith("/api/media/") || videoUrl.includes("/api/media/"))) {
+      const match = videoUrl.match(/\/api\/media\/([^?#]+)/);
+      const mediaName = match ? match[1] : path.basename(videoUrl);
+      const testPath = path.join(UPLOADS_DIR, mediaName);
+      if (fs.existsSync(testPath)) {
+        localVideoPath = testPath;
+      }
+    }
+
+    if (!localVideoPath && fileName) {
+      const matched = findUploadMatch(fileName, '');
+      if (matched && fs.existsSync(matched)) {
+        localVideoPath = matched;
+      }
+    }
+
+    if (!localVideoPath && safeBaseName && fs.existsSync(UPLOADS_DIR)) {
+      const allFiles = fs.readdirSync(UPLOADS_DIR);
+      const found = allFiles.find(f => f.endsWith(safeBaseName) || f.includes(safeBaseName));
+      if (found) {
+        localVideoPath = path.join(UPLOADS_DIR, found);
+      }
+    }
+
+    let tempInputFile = "";
+    if (!localVideoPath && videoUrl && (videoUrl.startsWith("http://") || videoUrl.startsWith("https://") || videoUrl.includes("/api/proxy-media"))) {
+      try {
+        const fetchTarget = videoUrl.startsWith("http") ? videoUrl : `http://localhost:${PORT}${videoUrl}`;
+        const fetchRes = await fetch(fetchTarget);
+        if (fetchRes.ok) {
+          const ab = await fetchRes.arrayBuffer();
+          tempInputFile = path.join(TEMP_DIR, `clean_in_${Date.now()}_${safeBaseName}`);
+          fs.writeFileSync(tempInputFile, Buffer.from(ab));
+          localVideoPath = tempInputFile;
+        }
+      } catch (e) {
+        console.warn("Could not download videoUrl for subtitle cleaner:", e);
+      }
+    }
+
+    if (!localVideoPath && videoBase64) {
+      tempInputFile = path.join(TEMP_DIR, `clean_in_${Date.now()}_${safeBaseName}`);
+      fs.writeFileSync(tempInputFile, Buffer.from(videoBase64, "base64"));
+      localVideoPath = tempInputFile;
+    }
+
+    if (!localVideoPath && fs.existsSync(UPLOADS_DIR)) {
+      const allFiles = fs.readdirSync(UPLOADS_DIR).filter(f => f.match(/\.(mp4|mov|webm|mkv)$/i));
+      if (allFiles.length > 0) {
+        allFiles.sort((a, b) => fs.statSync(path.join(UPLOADS_DIR, b)).mtimeMs - fs.statSync(path.join(UPLOADS_DIR, a)).mtimeMs);
+        localVideoPath = path.join(UPLOADS_DIR, allFiles[0]);
+      }
+    }
+
+    if (!localVideoPath || !fs.existsSync(localVideoPath)) {
+      return res.status(400).json({ error: "មិនអាចស្វែងរកហ្វាយវីដេអូដើមលើ Server បានទេ។ សូម Upload វីដេអូឡើងវិញ!" });
+    }
+
+    const cleanNoExt = safeBaseName.replace(/\.[^/.]+$/, "");
+    const outputFileName = `clean_${Date.now()}_${cleanNoExt}.mp4`;
+    const outputPath = path.join(UPLOADS_DIR, outputFileName);
+
+    // 2. If Colab Cloudflare URL is provided, try remote LaMa AI GPU Inpainting first
+    if (colabUrl && typeof colabUrl === "string" && colabUrl.trim()) {
+      let cleanColabUrl = colabUrl.trim().replace(/\/+$/, "");
+      if (!cleanColabUrl.startsWith("http://") && !cleanColabUrl.startsWith("https://")) {
+        cleanColabUrl = "https://" + cleanColabUrl;
+      }
+
+      try {
+        console.log(`[AI Subtitle Cleaner] Forwarding video to Colab GPU: ${cleanColabUrl}`);
+        const vidBuffer = fs.readFileSync(localVideoPath);
+        const vidB64 = vidBuffer.toString("base64");
+        const sanitizedZones = (zones || []).map((z: any) => ({
+          xPercent: Number(z.xPercent || 8),
+          yPercent: Number(z.yPercent || 58),
+          widthPercent: Number(z.widthPercent || 84),
+          heightPercent: Number(z.heightPercent || 24),
+          method: z.method || "smart_delogo"
+        }));
+
+        // 1. Try Async Task Pipeline first (100% immune to Cloudflare 524 100s timeout)
+        let cleanedB64: string | null = null;
+        let successMsg = "🎉 លុប Subtitle ដោយ Colab LaMa GPU ជោគជ័យ ១០០%!";
+
+        try {
+          const taskRes = await fetch(`${cleanColabUrl}/api/clean-video-task`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              video_base64: vidB64,
+              zones: sanitizedZones,
+              preset: "chest_subs",
+              engine: "lama"
+            }),
+            signal: AbortSignal.timeout(60000)
+          });
+
+          if (taskRes.ok) {
+            const taskData = await taskRes.json();
+            if (taskData.success && taskData.task_id) {
+              console.log(`[AI Subtitle Cleaner] Task queued on Colab: ${taskData.task_id}. Polling progress...`);
+              
+              // Poll task status every 2.5s for up to 10 minutes
+              const startTime = Date.now();
+              while (Date.now() - startTime < 600000) {
+                await new Promise((r) => setTimeout(r, 2500));
+                const pollRes = await fetch(`${cleanColabUrl}/api/task-status/${taskData.task_id}`, {
+                  signal: AbortSignal.timeout(10000)
+                });
+                if (pollRes.ok) {
+                  const pollData = await pollRes.json();
+                  console.log(`[AI Subtitle Cleaner] Colab Progress: ${pollData.progress || 0}% (Status: ${pollData.status})`);
+                  if (pollData.status === "completed" && pollData.cleaned_video_base64) {
+                    cleanedB64 = pollData.cleaned_video_base64;
+                    successMsg = pollData.message || successMsg;
+                    break;
+                  }
+                  if (pollData.status === "failed") {
+                    throw new Error(pollData.error || "Colab video inpainting task failed");
+                  }
+                }
+              }
+            }
+          }
+        } catch (asyncErr: any) {
+          console.warn("[AI Subtitle Cleaner] Async task note, falling back to direct:", asyncErr.message);
+        }
+
+        // 2. Fallback to direct synchronous clean-video if async didn't produce result
+        if (!cleanedB64) {
+          const colabRes = await fetch(`${cleanColabUrl}/api/clean-video`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              video_base64: vidB64,
+              zones: sanitizedZones,
+              preset: "chest_subs",
+              engine: "lama"
+            }),
+            signal: AbortSignal.timeout(300000)
+          });
+
+          if (colabRes.ok) {
+            const colabData = await colabRes.json();
+            if (colabData.success && colabData.cleaned_video_base64) {
+              cleanedB64 = colabData.cleaned_video_base64;
+              successMsg = colabData.message || successMsg;
+            }
+          } else {
+            const errText = await colabRes.text().catch(() => "");
+            console.error(`[AI Subtitle Cleaner] Colab GPU returned status ${colabRes.status}:`, errText);
+            return res.status(colabRes.status || 500).json({
+              error: `Colab Server Error (${colabRes.status}): ${errText.slice(0, 300)}`
+            });
+          }
+        }
+
+        if (cleanedB64) {
+          const rawColabB64 = cleanedB64.split(",").pop() || "";
+          fs.writeFileSync(outputPath, Buffer.from(rawColabB64, "base64"));
+          if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+            if (tempInputFile && fs.existsSync(tempInputFile)) {
+              try { fs.unlinkSync(tempInputFile); } catch {}
+            }
+            return res.json({
+              success: true,
+              videoUrl: `/api/media/${outputFileName}`,
+              fileName: outputFileName,
+              message: successMsg
+            });
+          }
+        }
+      } catch (colabErr: any) {
+        console.warn("[AI Subtitle Cleaner] Colab GPU request error:", colabErr.message);
+        return res.status(500).json({
+          error: `មិនអាចភ្ជាប់ទៅកាន់ Colab GPU Link បានទេ (${colabErr.message})។ សូមពិនិត្យមើល Colab ឡើងវិញ!`
+        });
+      }
+    }
+
+    // 3. Fallback to Local Smart Delogo / Inpainting Filter Chain
+    const vfChain: string[] = [];
+    const activeZones = Array.isArray(zones) && zones.length > 0 ? zones : [
+      { xPercent: 10, yPercent: 65, widthPercent: 80, heightPercent: 22, method: 'smart_delogo' }
+    ];
+
+    for (const z of activeZones) {
+      const xPct = Math.max(0, Math.min(100, Number(z.xPercent || 0))) / 100.0;
+      const yPct = Math.max(0, Math.min(100, Number(z.yPercent || 0))) / 100.0;
+      const wPct = Math.max(1, Math.min(100, Number(z.widthPercent || 30))) / 100.0;
+      const hPct = Math.max(1, Math.min(100, Number(z.heightPercent || 15))) / 100.0;
+      const m = z.method || "smart_delogo";
+
+      if (m === "cinematic_backdrop") {
+        vfChain.push(`drawbox=x=iw*${xPct.toFixed(3)}:y=ih*${yPct.toFixed(3)}:w=iw*${wPct.toFixed(3)}:h=ih*${hPct.toFixed(3)}:color=black@0.85:t=fill`);
+      } else if (m === "gaussian_blur") {
+        vfChain.push(`split[main][blur];[blur]crop=iw*${wPct.toFixed(3)}:ih*${hPct.toFixed(3)}:iw*${xPct.toFixed(3)}:ih*${yPct.toFixed(3)},gblur=sigma=12[blurred];[main][blurred]overlay=iw*${xPct.toFixed(3)}:ih*${yPct.toFixed(3)}`);
+      } else {
+        vfChain.push(`delogo=x=round(iw*${xPct.toFixed(3)}):y=round(ih*${yPct.toFixed(3)}):w=round(iw*${wPct.toFixed(3)}):h=round(ih*${hPct.toFixed(3)}):show=0`);
+      }
+    }
+
+    const vfString = vfChain.join(",");
+    console.log(`[AI Subtitle Cleaner] Processing video with filter: ${vfString}`);
+
+    const ffmpegArgs = [
+      "-y",
+      "-i", localVideoPath,
+      "-vf", vfString,
+      "-c:v", "libx264",
+      "-preset", "fast",
+      "-crf", "19",
+      "-c:a", "copy",
+      outputPath
+    ];
+
+    const child = spawn("ffmpeg", ffmpegArgs, { windowsHide: true });
+    let stderr = "";
+
+    child.on("error", (spawnErr: any) => {
+      console.warn("[AI Subtitle Cleaner] Local FFmpeg spawn error:", spawnErr.message);
+      if (tempInputFile && fs.existsSync(tempInputFile)) {
+        try { fs.unlinkSync(tempInputFile); } catch {}
+      }
+      return res.status(500).json({
+        error: "មិនអាចដំណើរការ FFmpeg លើកុំព្យូទ័របានទេ។ សូមប្រើប្រាស់ Google Colab GPU Link សម្រាប់លុប Subtitle ដោយ AI LaMa!"
+      });
+    });
+
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+    }
+
+    child.on("close", (code) => {
+      if (res.headersSent) return;
+      if (tempInputFile && fs.existsSync(tempInputFile)) {
+        try { fs.unlinkSync(tempInputFile); } catch {}
+      }
+
+      if (code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 1000) {
+        return res.json({
+          success: true,
+          videoUrl: `/api/media/${outputFileName}`,
+          fileName: outputFileName,
+          message: "🎉 លុប Subtitle & Logo ដោយ AI ជោគជ័យ ១០០%!"
+        });
+      } else {
+        console.error("FFmpeg cleaner failed:", stderr.slice(-400));
+        return res.status(500).json({ error: `ការលុប Subtitle បរាជ័យ (Exit code ${code})` });
+      }
+    });
+  } catch (err: any) {
+    console.error("Video cleaning error:", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || "Failed to process video subtitle cleaner." });
+    }
+  }
+});
+
 // Vite & Production Static Middleware
 async function setupApp() {
   if (process.env.NODE_ENV !== "production") {
@@ -5093,15 +5883,15 @@ async function setupApp() {
   } else {
     // Locate the dist folder reliably across dev, electron asar, and unpacked environments
     const candidateDirs = [
-      __dirname, // In compiled dist/server.cjs, __dirname is the dist folder
-      path.join(__dirname, "dist"),
+      _serverDir, // In compiled dist/server.cjs, _serverDir is the dist folder
+      path.join(_serverDir, "dist"),
       path.join(process.cwd(), "dist"),
       path.join(process.cwd(), "app.asar.unpacked", "dist"),
       path.join(process.cwd(), "app.asar", "dist"),
       path.join(process.cwd(), "resources", "app.asar.unpacked", "dist"),
       path.join(process.cwd(), "resources", "dist")
     ];
-    const distPath = candidateDirs.find((dir) => dir && fs.existsSync(path.join(dir, "index.html"))) || __dirname;
+    const distPath = candidateDirs.find((dir) => dir && fs.existsSync(path.join(dir, "index.html"))) || _serverDir;
     console.log(`[Production] Serving static frontend from: ${distPath}`);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {

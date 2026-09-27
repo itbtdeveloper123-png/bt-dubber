@@ -23,8 +23,6 @@ interface TimelinePanelProps {
   onExtractBgm?: () => void;
   isExtractingBgm?: boolean;
   onSegmentChange?: (id: number, field: keyof RecapSegment, value: any) => void;
-  clonedVoices?: ClonedVoiceProfile[];
-  voiceRolesMapping?: VoiceRolesMapping;
   globalVoicePersona?: string;
   playingSegmentId?: number | null;
 }
@@ -45,8 +43,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   onExtractBgm,
   isExtractingBgm,
   onSegmentChange,
-  clonedVoices = [],
-  voiceRolesMapping,
   globalVoicePersona,
   playingSegmentId
 }) => {
@@ -353,32 +349,14 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           {/* Track 3: Dubber AI Speech Track */}
           {(() => {
             const getActiveEngineBadge = () => {
-              const persona = (globalVoicePersona || '').toLowerCase();
-              if (
-                persona === 'auto_default' ||
-                persona === 'default' ||
-                persona.startsWith('edge_') ||
-                ['male', 'female', 'narrator', 'male_elder', 'child', 'child_boy', 'child_girl'].includes(persona)
-              ) {
-                return { label: 'Edge-TTS', gradient: 'from-emerald-600 via-teal-600 to-cyan-600' };
-              }
-              if (persona.startsWith('kiri_')) {
-                return { label: 'Kiri AI', gradient: 'from-blue-600 via-indigo-600 to-violet-600' };
-              }
-              if (persona.startsWith('gemini_')) {
-                return { label: 'Gemini AI', gradient: 'from-amber-600 via-orange-600 to-rose-600' };
-              }
-              if (persona.startsWith('voice_') || persona === 'auto_cloned' || (clonedVoices && clonedVoices.length > 0)) {
-                return { label: 'VoxCPM', gradient: 'from-purple-600 via-indigo-600 to-pink-600' };
-              }
-              return { label: 'Edge-TTS', gradient: 'from-emerald-600 via-teal-600 to-cyan-600' };
+              return { label: 'Piseth & Sreymom', gradient: 'from-emerald-600 via-teal-600 to-indigo-600' };
             };
             const engineBadge = getActiveEngineBadge();
 
             return (
-              <div className="h-9 sm:h-10 border-b border-gray-200 px-2 sm:px-2.5 flex items-center justify-between bg-gradient-to-r from-purple-50/90 via-indigo-50/70 to-blue-50/90">
+              <div className="h-9 sm:h-10 border-b border-gray-200 px-2 sm:px-2.5 flex items-center justify-between bg-gradient-to-r from-emerald-50/90 via-teal-50/70 to-indigo-50/90">
                 <div className="flex items-center gap-1 sm:gap-1.5 font-bold text-slate-800 truncate">
-                  <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-purple-600 fill-purple-600 shrink-0" />
+                  <Sparkles className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-teal-600 fill-teal-600 shrink-0" />
                   <span className="truncate text-xs font-khmer">Khmer Dubber</span>
                 </div>
                 <span className={`text-[8px] sm:text-[9px] bg-gradient-to-r ${engineBadge.gradient} text-white font-bold px-1.5 py-0.5 rounded shadow-2xs flex items-center gap-1 shrink-0`}>
@@ -540,7 +518,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               const isNarrator = g === 'narrator';
               const emoji = isFemale ? '👩' : isMale ? '👨' : '🎙️';
               const roleLabel = seg.speaker_name || (isFemale ? 'តួស្រី' : isMale ? 'តួប្រុស' : 'អ្នកសម្រាយ');
-              const hasClonedVoice = (clonedVoices && clonedVoices.length > 0) || g.startsWith('voice_');
 
               let bgClass = 'bg-blue-100 hover:bg-blue-200 text-blue-950 border-blue-300';
               if (isBeingDragged) {
@@ -579,14 +556,11 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1 truncate px-1 flex-1 pointer-events-none">
-                    <span className="text-[11px] shrink-0">{emoji}</span>
-                    {hasClonedVoice && (
-                      <span className={`text-[7.5px] px-1 py-0.2 rounded font-bold shrink-0 ${
-                        isActive || isCurrentlyPlaying ? 'bg-amber-400 text-slate-950' : 'bg-amber-100 text-amber-900 border border-amber-300'
-                      }`}>
-                        ⚡ VoxCPM
-                      </span>
-                    )}
+                    <span className={`text-[7.5px] px-1 py-0.2 rounded font-bold shrink-0 ${
+                      isActive || isCurrentlyPlaying ? 'bg-amber-400 text-slate-950' : 'bg-teal-50 text-teal-900 border border-teal-200'
+                    }`}>
+                      🎙️ {isFemale ? 'Sreymom' : 'Piseth'}
+                    </span>
                     {seg.playback_speed && seg.playback_speed !== 1.0 && (
                       <span className="text-[7.5px] px-1 py-0.2 rounded font-mono font-bold bg-blue-500/20 text-blue-900 border border-blue-400/40 shrink-0">
                         ⚡{seg.playback_speed}x

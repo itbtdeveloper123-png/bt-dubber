@@ -5,9 +5,10 @@ import {
   CheckCircle2, RefreshCw, Trash2, ArrowRight, Clock, ShieldCheck, PlayCircle
 } from 'lucide-react';
 import { getSafeMediaUrl } from '../utils/mediaUtils';
-import { MovieRecapResult, TranslationMode } from '../types';
+import { MovieRecapResult, TranslationMode, RecapStyle } from '../types';
 import { processAndExtractAudio } from '../utils/mediaExtractor';
 import { extractBgmInstrumentalTrack } from '../utils/vocalRemover';
+import { incrementDailyUsage } from '../utils/apiQuotaTracker';
 
 interface VideoUploadModalProps {
   isOpen: boolean;
@@ -105,6 +106,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
   const [batchFolderName, setBatchFolderName] = useState<string>('');
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
   const [batchTranslationMode, setBatchTranslationMode] = useState<TranslationMode>(translationMode);
+  const [batchRecapStyle, setBatchRecapStyle] = useState<RecapStyle>('chinese_historical_wuxia');
   const [autoExtractBgm, setAutoExtractBgm] = useState<boolean>(true);
   const [isBatchProcessing, setIsBatchProcessing] = useState<boolean>(false);
   const isCancelledRef = useRef<boolean>(false);
@@ -265,7 +267,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
         inputMode: 'video',
         translationMode: batchTranslationMode,
         sourceLanguage: 'auto',
-        recapStyle: 'dramatic_action',
+        recapStyle: batchRecapStyle,
         targetDurationMin: 3,
         episodeNumber: epNum,
         seriesTitle: folderTitle,
@@ -280,6 +282,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
     }
 
     const recapData: MovieRecapResult = await recapRes.json();
+    incrementDailyUsage('translation', 1);
 
     // 3. AI Python Demucs Vocal Remover (Isolate BGM) if enabled
     let bgmTrackUrl = '';
@@ -614,20 +617,42 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
                         />
                       </div>
 
-                      <div>
-                        <label className="text-[11px] font-bold text-slate-300 block mb-1">
-                          🎙️ ទម្រង់នៃការបកប្រែ (Translation Mode)៖
-                        </label>
-                        <select
-                          value={batchTranslationMode}
-                          onChange={(e) => setBatchTranslationMode(e.target.value as TranslationMode)}
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
-                        >
-                          <option value="word_by_word_lip_sync">🗣️ បកប្រែបញ្ចូលសំឡេងខ្មែរ (Word-by-Word Lip Sync)</option>
-                          <option value="movie_recap">🎬 សម្រាយរឿងបែបភាពយន្ត (Dramatic Movie Recap)</option>
-                          <option value="character_dialogue">🎭 សំឡេងតាមតួអង្គ (Character Dubbing)</option>
-                          <option value="hybrid_recap_dub">⚡ កូនកាត់ (Hybrid Dub & Recap)</option>
-                        </select>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                            🎙️ ទម្រង់នៃការបកប្រែ (Translation Mode)៖
+                          </label>
+                          <select
+                            value={batchTranslationMode}
+                            onChange={(e) => setBatchTranslationMode(e.target.value as TranslationMode)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                          >
+                            <option value="word_by_word_lip_sync">🗣️ បកប្រែបញ្ចូលសំឡេងខ្មែរ (Word-by-Word Lip Sync)</option>
+                            <option value="movie_recap">🎬 សម្រាយរឿងបែបភាពយន្ត (Dramatic Movie Recap)</option>
+                            <option value="character_dialogue">🎭 សំឡេងតាមតួអង្គ (Character Dubbing)</option>
+                            <option value="hybrid_recap_dub">⚡ កូនកាត់ (Hybrid Dub & Recap)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                            🎭 ប្រភេទរឿង / ស្ត្រាយ (Genre & Style)៖
+                          </label>
+                          <select
+                            value={batchRecapStyle}
+                            onChange={(e) => setBatchRecapStyle(e.target.value as RecapStyle)}
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-500"
+                          >
+                            <option value="chinese_historical_wuxia">👑 រឿងចិនបុរាណ / ក្បាច់គុន / ទេវកថា (Chinese Historical / Wuxia)</option>
+                            <option value="anime_manga">⚡ រឿង Anime / គំនូរជីវចលជប៉ុន (Anime & Manga)</option>
+                            <option value="korean_romance_drama">💖 រឿងភាគកូរ៉េ / មនោសញ្ចេតនា (K-Drama & Romance)</option>
+                            <option value="hollywood_scifi_action">🚀 រឿងហូលីវូដ / វិទ្យាសាស្ត្រ / បាញ់ប្រហារ (Hollywood Sci-Fi / Action)</option>
+                            <option value="dark_horror_mystery">👻 រឿងខ្មោច / ព្រឺព្រួច / អាថ៌កំបាំង (Horror & Mystery)</option>
+                            <option value="fast_comedy">🔥 រឿងកំប្លែង / សើចសប្បាយ (Comedy & Fun)</option>
+                            <option value="general_modern_recap">🎬 រឿងទូទៅ / សម្រាយរឿងបែបទំនើប (General Movie Recap)</option>
+                            <option value="dramatic_action">⚡ សកម្មភាពរន្ធត់ & វាយប្រហារ (Dramatic Action)</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
 

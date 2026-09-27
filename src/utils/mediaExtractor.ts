@@ -1,23 +1,55 @@
-export async function processAndExtractAudio(file: File): Promise<{ base64: string; mimeType: string }> {
-  // If it's already a small audio or video file (< 8MB), we can read as base64 directly
-  if (file.size < 8 * 1024 * 1024) {
+export async function processAndExtractAudio(
+  fileOrBlobOrUrl: File | Blob | string | null | undefined,
+  customFileName?: string
+): Promise<{ base64: string; mimeType: string }> {
+  if (!fileOrBlobOrUrl) {
+    throw new Error('No valid media file or URL provided for audio extraction');
+  }
+
+  // If input is a URL string, call server extract endpoint directly
+  if (typeof fileOrBlobOrUrl === 'string') {
+    const serverRes = await fetch('/api/extract-full-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mediaUrl: fileOrBlobOrUrl,
+        fileName: customFileName || fileOrBlobOrUrl.split('/').pop() || 'media.mp4'
+      })
+    });
+
+    if (serverRes.ok) {
+      const data = await serverRes.json();
+      if (data.base64) {
+        return {
+          base64: `data:${data.mimeType || 'audio/wav'};base64,${data.base64}`,
+          mimeType: data.mimeType || 'audio/wav'
+        };
+      }
+    }
+    throw new Error('Server failed to extract audio from URL');
+  }
+
+  if (!(fileOrBlobOrUrl instanceof Blob)) {
+    throw new Error('Invalid media input: Expected a File, Blob, or URL string');
+  }
+
+  const file = fileOrBlobOrUrl;
+  const safeName = (file instanceof File && file.name) ? file.name : (customFileName || 'media.wav');
+
+  // If it's already a pure audio file (WAV/MP3/AAC), read as base64 directly
+  const cleanType = (file.type || '').split(';')[0].trim().toLowerCase();
+  const isPureAudio = cleanType.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(safeName);
+
+  if (isPureAudio && file.size < 25 * 1024 * 1024) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const result = e.target?.result as string;
         if (result) {
-          const cleanType = (file.type || '').split(';')[0].trim().toLowerCase();
-          let mimeType = 'video/mp4';
-          if (cleanType === 'audio/wav' || cleanType === 'audio/x-wav' || file.name.endsWith('.wav')) {
-            mimeType = 'audio/wav';
-          } else if (cleanType.startsWith('audio/') || file.name.endsWith('.mp3')) {
-            mimeType = 'audio/mp3';
-          } else if (cleanType === 'video/webm' || file.name.endsWith('.webm')) {
-            mimeType = 'video/webm';
-          }
-          resolve({ base64: result, mimeType });
+          const mime = cleanType || 'audio/wav';
+          resolve({ base64: result, mimeType: mime });
         } else {
-          reject(new Error('Failed to read file as Data URL'));
+          reject(new Error('Failed to read audio file'));
         }
       };
       reader.onerror = () => reject(new Error('FileReader error'));
@@ -25,7 +57,44 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
     });
   }
 
-  // For larger video/audio files (> 8MB), extract & downsample audio track to lightweight 16kHz WAV
+  // 1. Try server-side FFmpeg 100% full audio extraction (Super fast, flawless, extracts 100% of duration)
+  try {
+    const reader = new FileReader();
+    const base64Promise = new Promise<string>((resolve, reject) => {
+      reader.onload = () => {
+        const res = (reader.result as string || '').split(',')[1];
+        if (res) resolve(res);
+        else reject(new Error('Empty base64'));
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const fileBase64 = await base64Promise;
+    const serverRes = await fetch('/api/extract-full-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fileBase64,
+        fileName: safeName
+      })
+    });
+
+    if (serverRes.ok) {
+      const data = await serverRes.json();
+      if (data.base64) {
+        console.log(`🎬 [Full Audio Extracted]: ${(data.durationSec || 0).toFixed(1)}s of 100% complete audio`);
+        return {
+          base64: `data:${data.mimeType || 'audio/wav'};base64,${data.base64}`,
+          mimeType: data.mimeType || 'audio/wav'
+        };
+      }
+    }
+  } catch (serverErr) {
+    console.warn('Server FFmpeg audio extraction notice, trying browser WebAudio:', serverErr);
+  }
+
+  // 2. Client-side Browser WebAudio Extraction
   try {
     const arrayBuffer = await file.arrayBuffer();
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
@@ -34,11 +103,9 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
     const audioCtx = new AudioCtx();
     const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     
-    // Target 16,000 Hz Mono for compact size & high speech recognition accuracy
-    const targetSampleRate = 16000;
     const duration = decodedBuffer.duration;
-    // Cap audio duration at max 4 minutes (240s) for ultra-fast upload and instant translation
-    const cappedDuration = Math.min(duration, 240);
+    const cappedDuration = Math.min(duration, 1800); // Up to 30 minutes
+    const targetSampleRate = 16000;
     const targetLength = Math.floor(cappedDuration * targetSampleRate);
 
     const offlineCtx = new OfflineAudioContext(1, targetLength, targetSampleRate);
@@ -67,9 +134,8 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
     });
 
   } catch (err) {
-    console.warn('Browser audio extraction failed, falling back to direct slice:', err);
-    // Fallback: Slice first 6MB of raw file if audio decoding fails
-    const slicedBlob = file.slice(0, 6 * 1024 * 1024, file.type);
+    console.warn('Browser audio extraction error:', err);
+    // Fallback: Read full file as base64
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -77,11 +143,11 @@ export async function processAndExtractAudio(file: File): Promise<{ base64: stri
         if (result) {
           resolve({ base64: result, mimeType: file.type || 'video/mp4' });
         } else {
-          reject(new Error('Failed to read sliced file'));
+          reject(new Error('Failed to read file'));
         }
       };
-      reader.onerror = () => reject(new Error('FileReader error on slice'));
-      reader.readAsDataURL(slicedBlob);
+      reader.onerror = () => reject(new Error('FileReader error'));
+      reader.readAsDataURL(file);
     });
   }
 }

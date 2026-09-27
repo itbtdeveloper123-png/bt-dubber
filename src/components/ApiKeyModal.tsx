@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Key, X, Check, Eye, EyeOff, Sparkles, ExternalLink, ShieldCheck, AlertCircle, RefreshCw, Mic, Languages } from 'lucide-react';
+import { Key, X, Check, Eye, EyeOff, Sparkles, ExternalLink, ShieldCheck, AlertCircle, RefreshCw, Mic, Languages, Activity, Info, RotateCcw, Sliders } from 'lucide-react';
+import { getDailyUsage, incrementDailyUsage, resetDailyUsage, setDailyLimit, QuotaStats } from '../utils/apiQuotaTracker';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -27,14 +28,28 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   const [translationTestResult, setTranslationTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [voiceTestResult, setVoiceTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Quota Tracking state
+  const [transQuota, setTransQuota] = useState<QuotaStats>(() => getDailyUsage('translation'));
+  const [voiceQuota, setVoiceQuota] = useState<QuotaStats>(() => getDailyUsage('voice'));
+
+  const refreshQuotas = () => {
+    setTransQuota(getDailyUsage('translation'));
+    setVoiceQuota(getDailyUsage('voice'));
+  };
+
   useEffect(() => {
     setInputTranslationKey(apiKey || '');
     setInputVoiceKey(voiceApiKey || '');
     setTranslationTestResult(null);
     setVoiceTestResult(null);
+    refreshQuotas();
+
+    const handleQuotaUpdate = () => refreshQuotas();
+    window.addEventListener('gemini_quota_updated', handleQuotaUpdate);
+    return () => window.removeEventListener('gemini_quota_updated', handleQuotaUpdate);
   }, [apiKey, voiceApiKey, isOpen]);
 
-  if (!isOpen) return null;
+  const currentQuota = activeTab === 'translation' ? transQuota : voiceQuota;
 
   const handleTestKey = async (type: 'translation' | 'voice') => {
     const keyToTest = (type === 'translation' ? inputTranslationKey : inputVoiceKey).trim();
@@ -65,14 +80,22 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
       const data = await resp.json();
 
       if (resp.ok && data.valid) {
-        const msg = `✅ API Key ដំណើរការជោគជ័យ 100% (${data.model || 'Gemini 3.5 Flash'})!`;
+        const msg = `✅ API Key ដំណើរការជោគជ័យ 100% (${data.model || 'Gemini 2.5 Flash'})!`;
         if (type === 'translation') {
           setTranslationTestResult({ success: true, message: msg });
         } else {
           setVoiceTestResult({ success: true, message: msg });
         }
       } else {
-        const msg = `❌ ${data.error || 'API Key មិនត្រឹមត្រូវ ឬជាប់កំណត់ Quota!'}`;
+        let cleanErr = data.error || 'API Key មិនត្រឹមត្រូវ ឬជាប់កំណត់ Quota!';
+        try {
+          if (cleanErr.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') || cleanErr.includes('UNAUTHENTICATED')) {
+            cleanErr = 'API Key មិនត្រឹមត្រូវ! សូមប្រើប្រាស់ Key ដែលចាប់ផ្ដើមដោយ "AIzaSy..." ពី Google AI Studio។';
+          } else if (cleanErr.includes('RESOURCE_EXHAUSTED') || cleanErr.includes('429')) {
+            cleanErr = 'API Key នេះជាប់កំណត់ Quota (429)។ សូមបង្កើត Key ថ្មីលើ Account មួយផ្សេងទៀត។';
+          }
+        } catch {}
+        const msg = `❌ ${cleanErr}`;
         if (type === 'translation') {
           setTranslationTestResult({ success: false, message: msg });
         } else {
@@ -95,6 +118,95 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     }
   };
 
+  const renderQuotaCard = (quota: QuotaStats, type: 'translation' | 'voice') => {
+    return (
+      <div className="p-3.5 bg-slate-950/80 border border-slate-800/90 rounded-2xl space-y-2.5 shadow-inner">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className={`w-6 h-6 rounded-lg flex items-center justify-center ${type === 'translation' ? 'bg-amber-500/20 text-amber-400' : 'bg-purple-500/20 text-purple-400'}`}>
+              <Activity className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-200 font-khmer flex items-center gap-1.5">
+                <span>កម្រិតប្រើប្រាស់ថ្ងៃនេះ (Daily Requests / Limit)</span>
+              </h4>
+            </div>
+          </div>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-khmer flex items-center gap-1 ${
+            quota.status === 'safe'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+              : quota.status === 'warning'
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse'
+              : 'bg-red-500/20 text-red-300 border border-red-500/30 animate-pulse'
+          }`}>
+            {quota.status === 'safe' && '🟢 កម្រិតសុវត្ថិភាព (Safe)'}
+            {quota.status === 'warning' && '🟡 ជិតដល់ Limit (Warning)'}
+            {quota.status === 'danger' && '🔴 អស់ Quota (Exhausted)'}
+          </span>
+        </div>
+
+        {/* Progress bar */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] font-khmer">
+            <span className="text-slate-400">
+              បានប្រើថ្ងៃនេះ៖ <strong className="text-white text-xs font-mono">{quota.count.toLocaleString()}</strong> / {quota.limit.toLocaleString()} Requests
+            </span>
+            <span className={`font-mono font-bold ${quota.status === 'safe' ? 'text-emerald-400' : quota.status === 'warning' ? 'text-amber-400' : 'text-red-400'}`}>
+              {quota.percent}% ({quota.remaining.toLocaleString()} នៅសល់)
+            </span>
+          </div>
+          <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+            <div 
+              className={`h-full rounded-full transition-all duration-500 ${
+                quota.status === 'safe'
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                  : quota.status === 'warning'
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-400'
+                  : 'bg-gradient-to-r from-red-500 to-rose-400'
+              }`}
+              style={{ width: `${Math.max(3, quota.percent)}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Helper info & actions */}
+        <div className="flex items-center justify-between text-[10px] text-slate-400 font-khmer pt-1 border-t border-slate-800/60">
+          <div className="flex items-center gap-1 text-slate-400">
+            <Info className="w-3 h-3 text-slate-500 shrink-0" />
+            <span>Google Free Quota: 1,500 requests/ថ្ងៃ (Reset ម៉ោង 12:00 យប់)</span>
+          </div>
+          <div className="flex items-center gap-2 font-bold">
+            <button
+              type="button"
+              onClick={() => {
+                const newLimitStr = prompt('កំណត់ចំនួន Limit ក្នុងមួយថ្ងៃ (Default: 1500):', String(quota.limit));
+                if (newLimitStr) {
+                  const num = parseInt(newLimitStr, 10);
+                  if (!isNaN(num) && num > 0) setDailyLimit(type, num);
+                }
+              }}
+              className="text-[10.5px] text-amber-400 hover:text-amber-300 transition underline cursor-pointer"
+            >
+              ប្តូរ Limit
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm('តើអ្នកពិតជាចង់ Reset ចំនួន Request ថ្ងៃនេះមែនទេ?')) {
+                  resetDailyUsage(type);
+                }
+              }}
+              className="text-[10.5px] text-slate-400 hover:text-red-400 transition underline cursor-pointer flex items-center gap-0.5"
+            >
+              <RotateCcw className="w-2.5 h-2.5" />
+              <span>Reset</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const handleSave = () => {
     const cleanTransKey = inputTranslationKey.trim();
     const cleanVoiceKey = inputVoiceKey.trim();
@@ -112,14 +224,16 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     }
   };
 
+  if (!isOpen) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs select-none animate-fadeIn">
       <div 
-        className="relative w-full max-w-lg bg-[#181B20] text-gray-100 rounded-2xl border border-gray-700 shadow-2xl overflow-hidden font-sans"
+        className="relative w-full max-w-lg bg-[#181B20] text-gray-100 rounded-2xl border border-gray-700 shadow-2xl overflow-hidden font-sans max-h-[92vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 border-b border-gray-800 bg-[#1E222A]">
+        <div className="flex items-center justify-between px-4 sm:px-5 py-3.5 border-b border-gray-800 bg-[#1E222A] shrink-0">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center shadow-md">
               <Key className="w-4 h-4" />
@@ -145,7 +259,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         </div>
 
         {/* Tab Switcher */}
-        <div className="grid grid-cols-2 p-1.5 bg-[#121418] border-b border-gray-800 gap-1 text-xs font-khmer font-bold">
+        <div className="grid grid-cols-2 p-1.5 bg-[#121418] border-b border-gray-800 gap-1 text-xs font-khmer font-bold shrink-0">
           <button
             type="button"
             onClick={() => setActiveTab('translation')}
@@ -176,7 +290,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="p-4 sm:p-5 space-y-4 text-xs font-khmer">
+        <div className="p-4 sm:p-5 space-y-4 text-xs font-khmer overflow-y-auto">
           
           {/* Information Card */}
           <div className="p-3 bg-blue-950/40 border border-blue-800/40 rounded-xl flex items-start gap-2.5 text-blue-200">
@@ -185,6 +299,9 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <span className="font-bold text-white">សុវត្ថិភាពខ្ពស់ 100%:</span> API Key ទាំងពីរនឹងត្រូវបានរក្សាទុកតែលើ Browser (Local Storage) លើកុំព្យូទ័ររបស់អ្នកប៉ុណ្ណោះ។
             </div>
           </div>
+
+          {/* Daily Request Quota Tracker Card */}
+          {renderQuotaCard(currentQuota, activeTab)}
 
           {/* TAB 1: Translation API Key */}
           {activeTab === 'translation' && (
@@ -214,7 +331,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                       setInputTranslationKey(e.target.value);
                       setTranslationTestResult(null);
                     }}
-                    placeholder="AIzaSy... (Translation API Key)"
+                    placeholder="AIzaSy... ឬ AQ.Ab8RN6... (Translation API Key)"
                     className="w-full bg-[#101216] border border-gray-700 focus:border-amber-500 rounded-xl px-3 py-2.5 pr-10 text-xs font-mono text-white placeholder-gray-500 focus:outline-none transition shadow-inner"
                   />
                   <button
@@ -299,7 +416,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                       setInputVoiceKey(e.target.value);
                       setVoiceTestResult(null);
                     }}
-                    placeholder="AQ.Ab8RN6... (Dedicated Voice Clone API Key)"
+                    placeholder="AIzaSy... ឬ AQ.Ab8RN6... (Dedicated Voice Clone API Key)"
                     className="w-full bg-[#101216] border border-gray-700 focus:border-purple-500 rounded-xl px-3 py-2.5 pr-10 text-xs font-mono text-white placeholder-gray-500 focus:outline-none transition shadow-inner"
                   />
                   <button
@@ -318,16 +435,15 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      const validKey = inputTranslationKey || 'AQ.Ab8RN6IDGMkuYsfuPdPrwLvp2q4soUrXCAxfyTDBFDtoxL8Bkg';
-                      setInputVoiceKey(validKey);
-                      setVoiceTestResult({
-                        success: true,
-                        message: '✅ បានភ្ជាប់ជាមួយ Gemini Key ដំណើរការជោគជ័យ ១០០% (Gemini 3.5 Flash)!'
-                      });
+                      const validKey = inputTranslationKey || '';
+                      if (validKey) {
+                        setInputVoiceKey(validKey);
+                        setVoiceTestResult(null);
+                      }
                     }}
                     className="px-2.5 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/80 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                   >
-                    <span>✨ ប្រើ Key ដូច Tab ១ (ធានាដំណើរការ ១០០% ភ្លាមៗ)</span>
+                    <span>✨ ប្រើ Key ដូច Tab ១</span>
                   </button>
                 </div>
               </div>
@@ -378,7 +494,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-t border-gray-800 bg-[#1A1D24]">
+        <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-t border-gray-800 bg-[#1A1D24] shrink-0">
           <button
             type="button"
             onClick={handleClear}

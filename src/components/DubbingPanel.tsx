@@ -15,7 +15,7 @@ import {
   Clock,
   Smile
 } from 'lucide-react';
-import { MovieRecapResult, ClonedVoiceProfile, TranslationMode } from '../types';
+import { MovieRecapResult, TranslationMode } from '../types';
 
 interface DubbingPanelProps {
   recapData: MovieRecapResult | null;
@@ -26,8 +26,6 @@ interface DubbingPanelProps {
   onSpeedChange: (speed: number) => void;
   globalVoicePersona?: string;
   onChangeGlobalVoicePersona?: (persona: string) => void;
-  clonedVoices?: ClonedVoiceProfile[];
-  onOpenVoiceCloningModal?: () => void;
   onPlaySegment: (segment: any) => void;
   onPlayFullNarration: () => void;
   onTestVoice: () => void;
@@ -60,8 +58,6 @@ export const DubbingPanel: React.FC<DubbingPanelProps> = ({
   onSpeedChange,
   globalVoicePersona = 'auto',
   onChangeGlobalVoicePersona,
-  clonedVoices = [],
-  onOpenVoiceCloningModal,
   onPlaySegment,
   onPlayFullNarration,
   onTestVoice,
@@ -187,18 +183,6 @@ export const DubbingPanel: React.FC<DubbingPanelProps> = ({
             </button>
           )}
 
-          {onOpenVoiceCloningModal && (
-            <button
-              type="button"
-              onClick={onOpenVoiceCloningModal}
-              className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold font-khmer flex items-center gap-1 shadow-2xs transition active:scale-95 cursor-pointer shrink-0"
-              title="បើក AI Voice Cloning Studio (Upload & Morph សំឡេង)"
-            >
-              <Mic className="w-3 h-3" />
-              <span>Studio សំឡេង</span>
-            </button>
-          )}
-
           {/* Speed Selector */}
           <div className="flex items-center bg-white border border-gray-300 rounded-lg px-2 py-0.5 text-xs font-mono gap-1 shadow-2xs shrink-0">
             <span className="text-amber-600 font-bold text-[10px]">⚡</span>
@@ -235,45 +219,19 @@ export const DubbingPanel: React.FC<DubbingPanelProps> = ({
                 className="w-full bg-white border border-gray-300 hover:border-blue-400 rounded-lg px-2 py-1 text-gray-900 font-bold focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer text-[11px] font-khmer truncate shadow-2xs"
                 title="ជ្រើសរើសប្រភេទសំឡេងនិយាយខ្មែរ (Edge-TTS ឬ Cloned Profile)"
               >
-                <optgroup label="🌟 សំឡេងផ្ទាល់ខ្លួន (Google Colab VoxCPM2)">
-                  <option value="auto">✨ តាមតួអង្គ (Auto VoxCPM2 Roles)</option>
-                  <option value="child_boy">👦 ក្មេងប្រុស (Boy Child Cloned)</option>
-                  <option value="child_girl">👧 ក្មេងស្រី (Girl Child Cloned)</option>
-                  {clonedVoices.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.provider === 'voxcpm2' || v.colabUrl ? '⚡' : (v.provider === 'hf' ? '🤗' : (v.provider === 'kiri' ? '🌟' : '🎙️'))} {v.name} ({v.gender === 'female' ? 'ស្រី' : 'ប្រុស'} {v.provider === 'voxcpm2' || v.colabUrl ? 'VoxCPM2' : (v.provider === 'hf' ? 'Free HF' : (v.provider === 'kiri' ? 'Kiri' : 'Cloned'))})
-                    </option>
-                  ))}
+                <option value="auto">✨ តាមតួអង្គស្វ័យប្រវត្តិ (Auto Piseth & Sreymom)</option>
+                <optgroup label="👨‍🦱 សំឡេង Piseth (ពិសិដ្ឋ)">
+                  <option value="narrator">🎙️ Piseth - អ្នកសម្រាយរឿង (ស្តង់ដារ)</option>
+                  <option value="male">👨‍🦱 Piseth - តួប្រុស (ធម្មជាតិ)</option>
+                  <option value="child_boy">👦 Piseth - ក្មេងប្រុស (រស់រវើក)</option>
+                  <option value="male_elder">👴 Piseth - លោកតា/មនុស្សចាស់</option>
+                  <option value="villain">🦹 Piseth - តួអាក្រក់/សំឡេងធ្ងន់</option>
                 </optgroup>
-
-                <optgroup label="🇰🇭 KiriTTS AI & Cloned Voices">
-                  <option value="kiri_ff">🌟 Kiri: ff (Cloud Clone)</option>
-                  <option value="kiri_Chanda">👨‍🦱 Kiri: Chanda (ប្រុស - ស្តង់ដារ)</option>
-                  <option value="kiri_Neary">👩‍🦰 Kiri: Neary (ស្រី - ស្រទន់)</option>
-                  <option value="kiri_Maly">👩‍🦰 Kiri: Maly (ស្រី - ច្បាស់)</option>
-                  <option value="kiri_Bora">👨‍🦱 Kiri: Bora (ប្រុស - រស់រវើក)</option>
-                  <option value="kiri_Oudom">👨‍🦱 Kiri: Oudom (ប្រុស - មាំ)</option>
-                  <option value="kiri_Setha">👨‍🦱 Kiri: Setha (ប្រុស)</option>
-                  <option value="kiri_Theary">👩‍🦰 Kiri: Theary (ស្រី)</option>
-                  <option value="kiri_Bosba">👩‍🦰 Kiri: Bosba (ស្រី)</option>
-                  <option value="kiri_Borey">👨‍🦱 Kiri: Borey (ប្រុស)</option>
-                </optgroup>
-
-                <optgroup label="🤖 Google Gemini Native AI Voices">
-                  <option value="gemini_puck">🎭 Gemini Puck (ប្រុស - រំភើប/Dramatic)</option>
-                  <option value="gemini_charon">🎙️ Gemini Charon (ប្រុស - បាសធ្ងន់/Deep Bass)</option>
-                  <option value="gemini_kore">👩 Gemini Kore (ស្រី - ស្រទន់ធម្មជាតិ/Calm)</option>
-                  <option value="gemini_fenrir">⚔️ Gemini Fenrir (ប្រុស - កាច/Intense Action)</option>
-                  <option value="gemini_aoede">✨ Gemini Aoede (ស្រី - កក់ក្តៅ/Warm Storyteller)</option>
-                </optgroup>
-
-                <optgroup label="🎙️ សំឡេងស្តង់ដារដើម (Microsoft Neural)">
-                  <option value="auto_default">🤖 តាមតួអង្គដើម (Piseth & Sreymom)</option>
-                  <option value="male">👨‍🦱 Piseth (ពិសិដ្ឋ - សំឡេងប្រុស)</option>
-                  <option value="female">👩‍🦰 Sreymom (ស្រីមុំ - សំឡេងស្រី)</option>
-                  <option value="narrator">🎙️ Piseth (អ្នកសម្រាយ)</option>
-                  <option value="male_elder">👴 Piseth (តាចាស់)</option>
-                  <option value="child">👶 Sreymom (កុមារ)</option>
+                <optgroup label="👩‍🦰 សំឡេង Sreymom (ស្រីមុំ)">
+                  <option value="female">👩‍🦰 Sreymom - តួស្រី (ស្រទន់ច្បាស់)</option>
+                  <option value="child_girl">👧 Sreymom - ក្មេងស្រី (គួរឱ្យស្រឡាញ់)</option>
+                  <option value="child">👶 Sreymom - កុមារ</option>
+                  <option value="female_elder">👵 Sreymom - លោកយាយ/មនុស្សចាស់</option>
                 </optgroup>
               </select>
             </div>
@@ -388,25 +346,16 @@ export const DubbingPanel: React.FC<DubbingPanelProps> = ({
                       onChange={(e) => onSegmentChange(seg.segment_id, 'speaker_gender', e.target.value)}
                       className={`text-[10px] font-bold font-khmer px-2 py-0.5 rounded-md border shadow-2xs focus:outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer max-w-[125px] sm:max-w-[140px] truncate shrink-0 transition ${getSpeakerBadgeClass(seg.speaker_gender)}`}
                     >
-                      <option value="narrator">🎙️ អ្នកសម្រាយ</option>
-                      <option value="male">👨‍🦱 តួប្រុស</option>
-                      <option value="female">👩‍🦰 តួស្រី</option>
-                      <option value="child_boy">👦 ក្មេងប្រុស</option>
-                      <option value="child_girl">👧 ក្មេងស្រី</option>
-                      <option value="male_elder">👴 តាចាស់</option>
-                      <option value="female_elder">👵 យាយចាស់</option>
-                      <option value="child">👶 កុមារ</option>
-                      <option value="villain">🦹 តួអាក្រក់</option>
-                      <option value="multi">👥 ប្រុស&ស្រី</option>
-                      {clonedVoices.length > 0 && (
-                        <optgroup label="🎙️ Cloned Voices">
-                          {clonedVoices.map((v) => (
-                            <option key={v.id} value={v.id}>
-                              🎙️ {v.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
+                      <option value="narrator">🎙️ អ្នកសម្រាយ (Piseth)</option>
+                      <option value="male">👨‍🦱 តួប្រុស (Piseth)</option>
+                      <option value="female">👩‍🦰 តួស្រី (Sreymom)</option>
+                      <option value="child_boy">👦 ក្មេងប្រុស (Piseth)</option>
+                      <option value="child_girl">👧 ក្មេងស្រី (Sreymom)</option>
+                      <option value="male_elder">👴 តាចាស់ (Piseth)</option>
+                      <option value="female_elder">👵 យាយចាស់ (Sreymom)</option>
+                      <option value="child">👶 កុមារ (Sreymom)</option>
+                      <option value="villain">🦹 តួអាក្រក់ (Piseth)</option>
+                      <option value="multi">👥 ប្រុស&ស្រី (Piseth & Sreymom)</option>
                     </select>
 
                     {/* Speaker Name Input */}
@@ -624,58 +573,6 @@ export const DubbingPanel: React.FC<DubbingPanelProps> = ({
             </button>
           )}
         </div>
-
-        {/* Tier 2: Primary High-Impact Action - Batch Generate All Cloned Voices */}
-        {onBatchGenerateAllAudio && recapData?.recap_segments && recapData.recap_segments.length > 0 && (() => {
-          const currentCount = batchProgress?.current || 0;
-          const totalCount = batchProgress?.total || recapData.recap_segments.length || 1;
-          const percent = Math.min(100, Math.max(0, Math.round((currentCount / totalCount) * 100)));
-
-          return (
-            <div className="space-y-1.5">
-              <button
-                type="button"
-                onClick={onBatchGenerateAllAudio}
-                disabled={isBatchGeneratingAudio || isLoading || isProofreadingScript}
-                className={`relative overflow-hidden w-full py-2.5 px-3 rounded-xl text-white text-xs font-bold font-khmer transition-all flex items-center justify-center gap-2 shadow-md active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed ${
-                  isBatchGeneratingAudio
-                    ? 'bg-slate-900 border border-teal-500/50 text-teal-200 ring-2 ring-teal-500/30'
-                    : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-teal-500 hover:shadow-lg'
-                }`}
-                title={
-                  globalVoicePersona === 'auto_default' || globalVoicePersona?.startsWith('edge_')
-                    ? "បង្កើតសំឡេង Microsoft Edge-TTS (Piseth & Sreymom) លឿនរហ័សគ្រប់ឈុត (1-Click Batch Voice Generation)"
-                    : "បង្កើតសំឡេង Cloned VoxCPM គ្រប់ឈុតទាំងអស់ម្តងតែមួយ (1-Click Batch Voice Generation)"
-                }
-              >
-                {/* Live Real-Time Animated Progress Fill */}
-                {isBatchGeneratingAudio && (
-                  <div
-                    className="absolute left-0 top-0 bottom-0 bg-gradient-to-r from-teal-600/60 via-emerald-500/70 to-indigo-600/60 transition-all duration-300 ease-out"
-                    style={{ width: `${percent}%` }}
-                  />
-                )}
-
-                {/* Shimmer pulse effect when running */}
-                {isBatchGeneratingAudio && (
-                  <div className="absolute inset-0 bg-white/10 animate-pulse pointer-events-none" />
-                )}
-
-                <div className="relative z-10 flex items-center justify-center gap-2">
-                  <Zap className={`w-4 h-4 text-amber-300 fill-amber-300 ${isBatchGeneratingAudio ? 'animate-bounce' : ''}`} />
-                  <span className="tracking-wide">
-                    {isBatchGeneratingAudio
-                      ? `⚡ កំពុងបង្កើតសំឡេង Real-Time (${currentCount}/${totalCount} ឈុត) • ${percent}%`
-                      : globalVoicePersona === 'auto_default' || globalVoicePersona?.startsWith('edge_')
-                        ? `⚡ បង្កើតសំឡេង Piseth & Sreymom (${recapData.recap_segments.length} ឈុត)`
-                        : `⚡ បង្កើតសំឡេង Cloned ទាំងអស់ (${recapData.recap_segments.length} ឈុត)`}
-                  </span>
-                </div>
-              </button>
-            </div>
-          );
-        })()}
-
       </div>
 
     </div>

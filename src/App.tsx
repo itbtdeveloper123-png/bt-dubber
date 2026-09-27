@@ -508,8 +508,8 @@ export default function App() {
       : `/api/proxy-media?url=${encodeURIComponent(episode.videoUrl)}`;
 
     // Update or create recap with the TikTok episode video
-    setCurrentRecap((prev) => ({
-      ...(prev || DEFAULT_DEMO_RECAP!),
+    setCurrentRecap(() => ({
+      ...DEFAULT_INITIAL_RECAP,
       movie_title: title,
       videoUrl: proxyUrl,
       videoFileName: `${seriesName}_EP_${episode.episodeNumber}.mp4`,
@@ -518,6 +518,7 @@ export default function App() {
       seriesTitle: seriesName,
       bgmTrackUrl: undefined, // Reset BGM so AI automatically isolates BGM for this episode
       bgmFileName: undefined,
+      recap_segments: [] // Ensure zero demo segments are carried over
     }));
 
     // Auto-extract BGM instrumental in background for new TikTok episode
@@ -909,6 +910,7 @@ export default function App() {
         /* Mode 3: Dubbing Studio (AI Scriptwriter & Vocal Translator) */
         currentRecap ? (
           <RecapStudio
+            key={(currentRecap as any)?.id || currentRecap?.created_at || currentRecap?.movie_title || 'recap_studio'}
             recapData={currentRecap}
             onUpdateRecap={handleUpdateRecap}
             onSaveRecap={handleSaveCurrentRecap}
@@ -939,52 +941,42 @@ export default function App() {
             onRegenerateAll={async () => {
               if (!currentRecap) return;
 
-              // 1. If we have the raw uploaded video/audio file, re-extract and send audio directly to Gemini
-              if (currentRecap.rawFile) {
+              // 1. If we have rawFile or server/local videoUrl, re-extract 100% full audio and send to Gemini
+              setIsProcessingFile(true);
+              setIsLoading(true);
+              let mediaB64 = '';
+              let mime = 'audio/wav';
+
+              const sourceInput = (currentRecap.rawFile instanceof Blob && currentRecap.rawFile.size > 0)
+                ? currentRecap.rawFile
+                : currentRecap.videoUrl;
+
+              if (sourceInput) {
                 try {
-                  setIsProcessingFile(true);
-                  setIsLoading(true);
-                  const { base64, mimeType } = await processAndExtractAudio(currentRecap.rawFile);
-                  setIsProcessingFile(false);
-                  await handleGenerateRecap({
-                    transcript: '',
-                    mediaData: base64,
-                    mediaMimeType: mimeType,
-                    mediaFileName: currentRecap.videoFileName || currentRecap.rawFile.name,
-                    mediaUrl: currentRecap.videoUrl,
-                    inputMode: 'video',
-                    translationMode: translationMode,
-                    sourceLanguage: 'auto',
-                    recapStyle: 'dramatic_action',
-                    targetDurationMin: 3,
-                    episodeNumber: currentRecap.episodeNumber,
-                    seriesTitle: currentRecap.seriesTitle,
-                  });
-                  return;
+                  const extracted = await processAndExtractAudio(sourceInput, currentRecap.videoFileName);
+                  mediaB64 = extracted.base64;
+                  mime = extracted.mimeType;
                 } catch (e) {
-                  console.warn('Re-extract audio from rawFile failed, falling back:', e);
-                  setIsProcessingFile(false);
+                  console.warn('Re-extract audio failed:', e);
                 }
               }
 
-              // 2. If we have existing recap segments, use them as source text
-              const transcriptFromSegments = currentRecap.recap_segments && currentRecap.recap_segments.length > 0
-                ? currentRecap.recap_segments.map(s => `(${s.start_time}-${s.end_time}) ${s.speaker_name || ''}: ${s.original_summary || s.khmer_script}`).join('\n')
-                : '';
+              setIsProcessingFile(false);
 
-              const fallbackTranscript = transcriptFromSegments || `Create a dramatic Khmer movie recap for: ${currentRecap.movie_title || 'Movie Clip'}`;
-
+              // If media exists, send EMPTY transcript so Gemini ONLY translates the user's actual video audio
               await handleGenerateRecap({
-                transcript: fallbackTranscript,
-                inputMode: 'text',
+                transcript: mediaB64 || currentRecap.videoUrl ? '' : `Create a dramatic Khmer movie recap for "${currentRecap.movie_title || 'Movie'}"`,
+                mediaData: mediaB64,
+                mediaMimeType: mime,
+                mediaFileName: currentRecap.videoFileName || currentRecap.rawFile?.name || 'video.mp4',
+                mediaUrl: currentRecap.videoUrl,
+                inputMode: mediaB64 || currentRecap.videoUrl ? 'video' : 'text',
                 translationMode: translationMode,
                 sourceLanguage: 'auto',
                 recapStyle: 'dramatic_action',
                 targetDurationMin: 3,
                 episodeNumber: currentRecap.episodeNumber,
                 seriesTitle: currentRecap.seriesTitle,
-                mediaUrl: currentRecap.videoUrl,
-                mediaFileName: currentRecap.videoFileName
               });
             }}
           />
@@ -1016,7 +1008,7 @@ export default function App() {
           }
           setIsFolderExportModalOpen(true);
         }}
-        onSelectRecap={(recap) => setCurrentRecap(recap)}
+        onSelectRecap={handleSelectRecap}
         onDeleteRecap={handleDeleteSavedRecap}
         onClearAll={handleClearAllSaved}
       />

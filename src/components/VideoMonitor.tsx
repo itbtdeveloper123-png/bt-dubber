@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { 
   Play, Pause, Volume2, VolumeX, Maximize2, Upload, Video as VideoIcon, 
   Sparkles, Wand2, Ratio, AlertCircle, Film, Sliders, MicOff, Music, Volume1,
-  RotateCw, RefreshCw, Layers, CheckCircle2, ChevronDown
+  RotateCw, RefreshCw, Layers, CheckCircle2, ChevronDown, Eraser, Link as LinkIcon, Zap, Image
 } from 'lucide-react';
 import { convertVideoToH264MP4, isLikelyUnsupportedVideo } from '../utils/videoTranscoder';
 import { getSafeMediaUrl } from '../utils/mediaUtils';
@@ -44,6 +44,10 @@ interface VideoMonitorProps {
   subtitleConfig?: SubtitleStyleConfig;
   currentSegment?: RecapSegment | null;
   currentTimeSec?: number;
+  onOpenWatermarkCleaner?: () => void;
+  onOpenBgmLinkModal?: () => void;
+  bgmColabUrl?: string;
+  onOpenThumbnailModal?: () => void;
 }
 
 const PRESET_SAMPLE_VIDEOS = [
@@ -89,7 +93,11 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
   watermarkCleanerConfig,
   subtitleConfig,
   currentSegment,
-  currentTimeSec = 0
+  currentTimeSec = 0,
+  onOpenWatermarkCleaner,
+  onOpenBgmLinkModal,
+  bgmColabUrl,
+  onOpenThumbnailModal
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [showAudioControls, setShowAudioControls] = useState(false);
@@ -155,6 +163,22 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
 
   const hasAutoTranscodedRef = useRef<string>('');
 
+  // Reset video player state cleanly whenever a new video or project is selected
+  useEffect(() => {
+    setHasVideoError(false);
+    setIsTranscoding(false);
+    setTranscodeError(null);
+    setIsPlayingInternal(false);
+    hasAutoTranscodedRef.current = '';
+    if (videoRef.current) {
+      try {
+        videoRef.current.currentTime = 0;
+        videoRef.current.pause();
+        videoRef.current.load();
+      } catch (e) {}
+    }
+  }, [videoUrl, videoFileName]);
+
   // Automatically trigger transcoding for iPhone / HEVC / unsupported videos or when video error occurs
   useEffect(() => {
     if (!videoUrl || isAudioFile || isTranscoding) return;
@@ -165,15 +189,15 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
     // If we have already auto-transcoded this file, skip
     if (hasAutoTranscodedRef.current === videoUrl) return;
 
-    if (hasVideoError && rawFile) {
-      console.log('Video decode failed. Auto-triggering FFmpeg H.264 web transcoding...');
+    if (hasVideoError && (rawFile instanceof Blob || videoUrl)) {
       hasAutoTranscodedRef.current = videoUrl;
       handleStartTranscode();
     }
   }, [hasVideoError, videoUrl, rawFile, isAudioFile, videoFileName, isTranscoding]);
 
   const handleStartTranscode = async () => {
-    if (!rawFile) {
+    const targetSource = (rawFile instanceof Blob) ? rawFile : videoUrl;
+    if (!targetSource) {
       setTranscodeError('មិនមានហ្វាយវីដេអូដើមសម្រាប់បម្លែងទេ។ សូម Upload ហ្វាយម្តងទៀត។');
       return;
     }
@@ -185,11 +209,12 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
       setTranscodeError(null);
 
       const convertedFile = await convertVideoToH264MP4(
-        rawFile,
+        targetSource,
         (progress, status) => {
           setTranscodeProgress(progress);
           setTranscodeStatus(status);
-        }
+        },
+        videoFileName
       );
 
       const newBlobUrl = URL.createObjectURL(convertedFile);
@@ -200,9 +225,9 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
         onUpdateVideoUrl(newBlobUrl, convertedFile.name, convertedFile);
       }
     } catch (err: any) {
-      console.error('Transcode failed:', err);
+      console.warn('Transcode notice:', err);
       setIsTranscoding(false);
-      setTranscodeError(err.message || 'បរាជ័យក្នុងការបម្លែងវីដេអូ');
+      setTranscodeError(err?.message || 'បរាជ័យក្នុងការបម្លែងវីដេអូ');
     }
   };
 
@@ -318,28 +343,28 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
     switch (audioIsolationMode) {
       case 'remove_vocals_keep_bgm':
         return { 
-          label: '🎙️ លុបសំឡេងនិយាយ', 
-          shortLabel: '🎙️ លុបសំឡេង',
-          class: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' 
+          label: 'លុបសំឡេងនិយាយ', 
+          shortLabel: 'លុបសំឡេង',
+          class: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30' 
         };
       case 'smart_ducking':
         return { 
-          label: '🔉 Ducking 80%', 
-          shortLabel: '🔉 Ducking',
-          class: 'bg-blue-500/20 text-blue-300 border-blue-500/40' 
+          label: 'Ducking 80%', 
+          shortLabel: 'Ducking',
+          class: 'bg-blue-500/20 text-blue-300 border-blue-500/40 hover:bg-blue-500/30' 
         };
       case 'mute_all_original':
         return { 
-          label: '🔇 បិទសំឡេង', 
-          shortLabel: '🔇 Muted',
-          class: 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
+          label: 'បិទសំឡេងដើម', 
+          shortLabel: 'បិទសំឡេង',
+          class: 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30' 
         };
       case 'original_unmodified':
       default:
         return { 
-          label: '🔊 សំឡេងដើម', 
-          shortLabel: '🔊 ដើម',
-          class: 'bg-gray-500/20 text-gray-300 border-gray-500/40' 
+          label: 'សំឡេងដើម 100%', 
+          shortLabel: 'សំឡេងដើម',
+          class: 'bg-gray-700/40 text-gray-300 border-gray-600/40 hover:bg-gray-700/60' 
         };
     }
   };
@@ -415,12 +440,12 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
         </div>
       )}
 
-      {/* 1. Dedicated Top Toolbar (Clean, spacious, no overlap) */}
-      <div className="w-full flex items-center justify-between gap-1.5 pb-2 border-b border-gray-800 shrink-0 z-20 overflow-x-auto custom-scrollbar select-none">
+      {/* 1. Dedicated Top Toolbar (Clean, spacious, unified segmented pills) */}
+      <div className="w-full flex items-center justify-between gap-2 pb-2.5 border-b border-gray-800/80 shrink-0 z-20 overflow-x-auto custom-scrollbar select-none">
         
-        {/* Left: Video file badge, Upload button, Sample videos */}
+        {/* Left: Video file badge, Upload, Samples, AI Subtitle Cleaner */}
         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
-          <div className="bg-black/70 px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-mono text-gray-200 flex items-center gap-1.5 border border-white/10 shrink-0 shadow-2xs">
+          <div className="bg-black/60 hover:bg-black/80 px-2.5 py-1 rounded-lg text-[11px] font-mono text-gray-200 flex items-center gap-1.5 border border-white/10 shrink-0 shadow-xs h-7.5 transition">
             <VideoIcon className="w-3.5 h-3.5 text-blue-400 shrink-0" />
             <span className="truncate max-w-[90px] sm:max-w-[130px] md:max-w-[160px]" title={videoFileName || 'Movie Clip'}>
               {videoFileName || 'Movie Clip'}
@@ -431,32 +456,32 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
             <button
               type="button"
               onClick={() => reconnectFileInputRef.current?.click()}
-              className="bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-khmer font-bold flex items-center gap-1 shadow-2xs transition active:scale-95 cursor-pointer shrink-0"
+              className="bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 px-2.5 py-1 rounded-lg text-[11px] font-khmer font-bold flex items-center gap-1.5 shadow-xs transition active:scale-95 cursor-pointer shrink-0 h-7.5"
               title="ភ្ជាប់ហ្វាយវីដេអូដើមសម្រាប់ទស្សនារូបភាព"
             >
-              <Upload className="w-3 h-3 text-blue-400 shrink-0" />
-              <span>ភ្ជាប់វីដេអូ</span>
+              <Upload className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <span className="leading-none pb-0.5">ភ្ជាប់វីដេអូ</span>
             </button>
           )}
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="bg-blue-600 hover:bg-blue-500 px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-khmer font-bold text-white flex items-center gap-1 shadow-2xs transition active:scale-95 cursor-pointer shrink-0"
+            className="bg-blue-600 hover:bg-blue-500 px-2.5 py-1 rounded-lg text-[11px] font-khmer font-bold text-white flex items-center gap-1.5 shadow-xs transition active:scale-95 cursor-pointer shrink-0 h-7.5"
             title="Upload New Video File"
           >
-            <Upload className="w-3 h-3 shrink-0" />
-            <span className="hidden sm:inline">Upload</span>
+            <Upload className="w-3.5 h-3.5 shrink-0" />
+            <span className="leading-none pb-0.5 hidden sm:inline">Upload</span>
           </button>
 
           {onSelectSampleVideo && (
             <div className="relative shrink-0">
               <button
                 onClick={() => setShowSamplesMenu(!showSamplesMenu)}
-                className="bg-purple-600/80 hover:bg-purple-600 px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-khmer font-bold text-white flex items-center gap-1 shadow-2xs transition active:scale-95 cursor-pointer shrink-0"
+                className="bg-purple-600/80 hover:bg-purple-600 px-2.5 py-1 rounded-lg text-[11px] font-khmer font-bold text-white flex items-center gap-1.5 shadow-xs transition active:scale-95 cursor-pointer shrink-0 h-7.5"
                 title="ជ្រើសរើសវីដេអូគំរូសាកល្បង"
               >
-                <Film className="w-3 h-3 shrink-0" />
-                <span className="hidden md:inline">គំរូ</span>
+                <Film className="w-3.5 h-3.5 shrink-0" />
+                <span className="leading-none pb-0.5 hidden sm:inline">គំរូ</span>
                 <ChevronDown className="w-3 h-3 shrink-0 opacity-80" />
               </button>
 
@@ -482,27 +507,104 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
               )}
             </div>
           )}
+
+          {/* AI Subtitle & Logo Cleaner Unified Control Pill */}
+          {onOpenWatermarkCleaner && (
+            <div className="flex items-center rounded-lg border border-teal-500/40 bg-teal-950/40 p-0.5 shadow-xs shrink-0 h-7.5">
+              <button
+                type="button"
+                onClick={onOpenWatermarkCleaner}
+                className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-khmer font-bold text-teal-200 hover:text-white hover:bg-teal-600/30 rounded-md transition active:scale-95 cursor-pointer h-full"
+                title="លុប Subtitle, Logo & Watermark លើវីដេអូដោយ AI"
+              >
+                <Eraser className="w-3.5 h-3.5 text-teal-300 shrink-0" />
+                <span className="leading-none pb-0.5">AI លុប Subtitle</span>
+              </button>
+              <div className="h-3.5 w-px bg-teal-500/30 mx-0.5 shrink-0" />
+              <button
+                type="button"
+                onClick={onOpenWatermarkCleaner}
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-md transition cursor-pointer h-full ${
+                  watermarkCleanerConfig?.colabUrl || localStorage.getItem('cleaner_colab_url')
+                    ? 'text-teal-300 hover:bg-teal-800/40'
+                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60'
+                }`}
+                title="កំណត់ & ភ្ជាប់ Link Colab / Kaggle AI Cleaner"
+              >
+                <LinkIcon className="w-3 h-3 text-teal-400 shrink-0" />
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  watermarkCleanerConfig?.colabUrl || localStorage.getItem('cleaner_colab_url')
+                    ? 'bg-emerald-400 animate-pulse'
+                    : 'bg-slate-600'
+                }`} />
+              </button>
+            </div>
+          )}
+
+          {/* Quick Reels Thumbnail & Cover Creator Button */}
+          {onOpenThumbnailModal && (
+            <button
+              type="button"
+              onClick={onOpenThumbnailModal}
+              className="flex items-center gap-1.5 px-2.5 py-0.5 text-[11px] font-khmer font-bold text-rose-200 hover:text-white bg-rose-950/50 hover:bg-rose-900/60 rounded-lg transition active:scale-95 cursor-pointer border border-rose-500/40 shadow-xs h-7.5 shrink-0"
+              title="បង្កើត Thumbnail / Cover សម្រាប់ Facebook Reels ងាយស្រួលរកភាគ (Reels Cover Creator)"
+            >
+              <Image className="w-3.5 h-3.5 text-yellow-300 shrink-0" />
+              <span className="leading-none pb-0.5">Cover Reels</span>
+            </button>
+          )}
         </div>
 
         {/* Right: BGM status badge & Audio Mode selector */}
         <div className="flex items-center gap-1.5 shrink-0 ml-auto">
           {onExtractBgm && (
-            <button
-              type="button"
-              onClick={onExtractBgm}
-              disabled={isExtractingBgm}
-              className={`px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-khmer font-bold flex items-center gap-1 shadow-2xs transition active:scale-95 cursor-pointer shrink-0 border whitespace-nowrap ${
-                isExtractingBgm
-                  ? 'bg-amber-600 text-white border-amber-400/50 animate-pulse'
-                  : hasBgmTrack
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/50'
-                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white border-emerald-300/40'
-              }`}
-              title="លុបសំឡេងនិយាយក្នុងវីដេអូដើមចេញ ទុកតែភ្លេង BGM"
-            >
-              <Sparkles className={`w-3 h-3 shrink-0 ${isExtractingBgm ? 'animate-spin' : ''}`} />
-              <span>{isExtractingBgm ? `🪄 ញែក BGM ${bgmExtractProgress}%` : (hasBgmTrack ? '🎵 BGM រួច' : '🪄 ញែក BGM')}</span>
-            </button>
+            <div className="flex items-center rounded-lg border border-emerald-500/40 bg-emerald-950/40 p-0.5 shadow-xs shrink-0 h-7.5">
+              <button
+                type="button"
+                onClick={onExtractBgm}
+                disabled={isExtractingBgm}
+                className={`flex items-center gap-1.5 px-2.5 py-0.5 text-[11px] font-khmer font-bold rounded-md transition active:scale-95 cursor-pointer h-full ${
+                  isExtractingBgm
+                    ? 'bg-amber-600 text-white animate-pulse'
+                    : hasBgmTrack
+                    ? 'text-emerald-200 hover:text-white hover:bg-emerald-600/30'
+                    : 'text-emerald-300 hover:text-white hover:bg-emerald-600/30'
+                }`}
+                title="លុបសំឡេងនិយាយក្នុងវីដេអូដើមចេញ ទុកតែភ្លេង BGM"
+              >
+                {isExtractingBgm ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-300 shrink-0" />
+                ) : (
+                  <Music className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                )}
+                <span className="leading-none pb-0.5 whitespace-nowrap">
+                  {isExtractingBgm ? `ញែក BGM ${bgmExtractProgress}%` : (hasBgmTrack ? 'BGM រួចរាល់' : 'ញែក BGM')}
+                </span>
+              </button>
+
+              {onOpenBgmLinkModal && (
+                <>
+                  <div className="h-3.5 w-px bg-emerald-500/30 mx-0.5 shrink-0" />
+                  <button
+                    type="button"
+                    onClick={onOpenBgmLinkModal}
+                    className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded-md transition cursor-pointer h-full ${
+                      bgmColabUrl || localStorage.getItem('bgm_colab_url')
+                        ? 'text-emerald-300 hover:bg-emerald-800/40'
+                        : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60'
+                    }`}
+                    title="កំណត់ & ដាក់ Link Kaggle / Google Colab AI BGM Separator GPU"
+                  >
+                    <LinkIcon className="w-3 h-3 text-emerald-400 shrink-0" />
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      bgmColabUrl || localStorage.getItem('bgm_colab_url')
+                        ? 'bg-emerald-400 animate-pulse'
+                        : 'bg-slate-600'
+                    }`} />
+                  </button>
+                </>
+              )}
+            </div>
           )}
 
           {/* Audio Mode Selector Dropdown */}
@@ -510,10 +612,10 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
             <button
               type="button"
               onClick={() => setShowAudioControls(!showAudioControls)}
-              className={`px-2 py-1 rounded-md text-[10px] sm:text-[11px] font-khmer font-bold border flex items-center gap-1 transition cursor-pointer shrink-0 whitespace-nowrap shadow-2xs ${currentModeBadge.class}`}
+              className={`h-7.5 px-2.5 py-1 rounded-lg text-[11px] font-khmer font-bold border flex items-center gap-1.5 transition cursor-pointer shrink-0 shadow-xs ${currentModeBadge.class}`}
             >
-              <MicOff className="w-3 h-3 shrink-0" />
-              <span>{currentModeBadge.label}</span>
+              <MicOff className="w-3.5 h-3.5 shrink-0" />
+              <span className="leading-none pb-0.5 whitespace-nowrap">{currentModeBadge.label}</span>
               <ChevronDown className="w-3 h-3 shrink-0 opacity-70" />
             </button>
 
@@ -617,6 +719,30 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
                     className="w-full accent-emerald-500 cursor-pointer"
                   />
                 </div>
+
+                {/* Kaggle / Colab GPU Link Quick Button */}
+                {onOpenBgmLinkModal && (
+                  <div className="pt-2 border-t border-gray-700">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAudioControls(false);
+                        onOpenBgmLinkModal();
+                      }}
+                      className="w-full py-1.5 px-2 bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-500/40 rounded-md text-[10px] text-emerald-300 font-bold flex items-center justify-between transition cursor-pointer"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Zap className="w-3 h-3 text-emerald-400" />
+                        <span>⚡ ដាក់ Link Kaggle / Colab GPU</span>
+                      </span>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        bgmColabUrl || localStorage.getItem('bgm_colab_url')
+                          ? 'bg-emerald-400 animate-pulse'
+                          : 'bg-slate-500'
+                      }`} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -639,6 +765,7 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
           >
             <video
               ref={videoRef}
+              key={videoUrl || videoFileName || 'video-monitor-player'}
               src={getSafeMediaUrl(videoUrl)}
               crossOrigin="anonymous"
               playsInline
@@ -654,11 +781,11 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
               onError={(e) => {
                 const target = e.currentTarget as HTMLVideoElement;
                 const err = target?.error;
-                console.warn('Video element format error:', err ? `Code ${err.code}: ${err.message}` : 'Format not natively supported by browser');
+                console.warn('Video playback format note:', err ? `Code ${err.code}: ${err.message}` : 'Browser format decode notice');
                 setHasVideoError(true);
                 
-                // If it's a format error (Code 4 / HEVC / iPhone clip) and we have the raw file, auto-transcode to Web H.264
-                if (rawFile && !isTranscoding && hasAutoTranscodedRef.current !== videoUrl) {
+                // If it's a format error (Code 4 / HEVC / iPhone clip) and we haven't transcoded yet
+                if (!isTranscoding && hasAutoTranscodedRef.current !== videoUrl && (rawFile instanceof Blob || videoUrl)) {
                   hasAutoTranscodedRef.current = videoUrl || '';
                   handleStartTranscode();
                 }
@@ -794,8 +921,8 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
               </div>
             )}
 
-            {/* Live Watermark & Logo Cleaner Overlay */}
-            {watermarkCleanerConfig?.enabled && watermarkCleanerConfig.zones?.map((zone) => (
+            {/* Live Watermark & Logo Cleaner Overlay (Only for explicit backdrop/blur methods, NEVER for AI Inpaint) */}
+            {watermarkCleanerConfig?.enabled && watermarkCleanerConfig.zones?.filter(z => z.method === 'cinematic_backdrop' || z.method === 'gaussian_blur').map((zone) => (
               <div
                 key={zone.id}
                 style={{
@@ -803,14 +930,12 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
                   top: `${zone.yPercent}%`,
                   width: `${zone.widthPercent}%`,
                   height: `${zone.heightPercent}%`,
-                  backdropFilter: `blur(${Math.max(4, zone.intensity || 10)}px)`
+                  backdropFilter: zone.method === 'gaussian_blur' ? `blur(${Math.max(4, zone.intensity || 10)}px)` : undefined
                 }}
                 className={`absolute pointer-events-none z-5 transition-all ${
                   zone.method === 'cinematic_backdrop'
                     ? 'bg-gradient-to-b from-black/80 via-black/95 to-black/80 shadow-md'
-                    : zone.method === 'smart_delogo'
-                      ? 'bg-slate-900/40 backdrop-blur-xl'
-                      : 'bg-black/35 backdrop-blur-md'
+                    : 'bg-black/35 backdrop-blur-md'
                 }`}
               />
             ))}

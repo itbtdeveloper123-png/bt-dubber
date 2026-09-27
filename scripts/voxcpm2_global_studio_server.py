@@ -97,7 +97,11 @@ except ImportError:
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
-print(f"🚀 Running on: {gpu_name} ({device})")
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+print(f"🚀 Running on: {gpu_name} ({device}) [TF32 & CuDNN Benchmark Accelerated]")
 
 WORK_DIR = "/kaggle/working" if os.path.exists("/kaggle") else ("/content" if os.path.exists("/content") else os.getcwd())
 
@@ -311,7 +315,8 @@ def studio_voice_mastering(
         raw_wav = raw_wav.detach().cpu().squeeze().numpy()
 
     audio = np.squeeze(np.asarray(raw_wav, dtype=np.float32))
-    if audio.ndim == 0 or len(audio) == 0:
+    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+    if audio.ndim == 0 or len(audio) == 0 or np.max(np.abs(audio)) < 0.005:
         return np.zeros(sr, dtype=np.float32)
 
     # 1. Remove DC Offset
@@ -321,63 +326,65 @@ def studio_voice_mastering(
     if pitch_shift_semitones != 0.0:
         try:
             audio = librosa.effects.pitch_shift(audio, sr=sr, n_steps=pitch_shift_semitones)
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
         except Exception:
             pass
 
-    # 2. Trim silence with top_db=32 and add 40ms soft fade-in / fade-out
+    # 3. Trim excessive leading/trailing silence safely (top_db=40 to prevent cutting quiet Khmer consonants)
     try:
-        trimmed, _ = librosa.effects.trim(audio, top_db=32, frame_length=1024, hop_length=256)
+        trimmed, _ = librosa.effects.trim(audio, top_db=40, frame_length=1024, hop_length=256)
         if len(trimmed) > int(sr * 0.1):
             audio = trimmed
     except Exception:
         pass
 
-    # Smooth micro fade-in and fade-out (30ms) to eliminate click pops
-    fade_len = min(int(sr * 0.03), len(audio) // 4)
+    # Smooth micro fade-in and fade-out (20ms) to eliminate click pops
+    fade_len = min(int(sr * 0.02), len(audio) // 4)
     if fade_len > 0:
         fade_in = np.linspace(0.0, 1.0, fade_len, dtype=np.float32)
         fade_out = np.linspace(1.0, 0.0, fade_len, dtype=np.float32)
         audio[:fade_len] *= fade_in
         audio[-fade_len:] *= fade_out
 
-    # 3. High-Pass Filter (80Hz 2nd order Butterworth) via scipy.signal to eliminate sub-bass mud
+    # 4. High-Pass Filter (60Hz 2nd order Butterworth) to eliminate sub-bass rumble
     try:
         from scipy.signal import butter, sosfilt
-        sos_hp = butter(2, 80.0, btype='highpass', fs=sr, output='sos')
+        sos_hp = butter(2, 60.0, btype='highpass', fs=sr, output='sos')
         audio = sosfilt(sos_hp, audio)
     except Exception:
         pass
 
-    # 4. Multiband Studio Vocal EQ (Warmth & Clarity Presence)
+    # 5. Multiband Studio Vocal EQ (Warmth & Clarity Presence)
     if apply_vocal_eq:
         try:
             from scipy.signal import butter, sosfilt
             sos_shelf = butter(1, 3500.0, btype='highpass', fs=sr, output='sos')
             high_content = sosfilt(sos_shelf, audio)
-            audio = audio + (0.22 * high_content) # +1.8dB vocal presence & articulation
+            audio = audio + (0.18 * high_content) # +1.5dB vocal presence & articulation
         except Exception:
             pass
 
-    # 5. Studio Vocal Dynamic Range Compressor (Soft-Knee Peak Leveler)
+    # 6. Studio Vocal Dynamic Range Compressor (Soft-Knee Peak Leveler)
     if apply_compression:
         peak = np.max(np.abs(audio)) + 1e-7
-        if peak > 0:
-            drive = 1.35
+        if peak > 0.01:
+            drive = 1.30
             compressed = np.tanh(audio * drive) / np.tanh(drive)
-            audio = (0.75 * compressed) + (0.25 * audio)
+            audio = (0.70 * compressed) + (0.30 * audio)
 
-    # 6. ITU-R BS.1770 / EBU R128 RMS Loudness Target Normalization
+    # 7. ITU-R BS.1770 / EBU R128 RMS Loudness Target Normalization
     rms = np.sqrt(np.mean(audio**2)) + 1e-7
-    target_rms = 10.0 ** (target_lufs_rms / 20.0) # approx 0.125 (-18 dBFS)
-    gain = target_rms / rms
-    audio = audio * gain
+    if rms > 0.005:
+        target_rms = 10.0 ** (target_lufs_rms / 20.0) # approx 0.125 (-18 dBFS)
+        gain = min(target_rms / rms, 5.0) # cap max gain boost to 5x (+14dB) to avoid noise blast
+        audio = audio * gain
 
-    # 7. True Peak Hard / Soft Limiter at -1.0 dBFS (0.891 max amp) to guarantee zero distortion
+    # 8. True Peak Hard / Soft Limiter at -1.0 dBFS (0.891 max amp) to guarantee zero distortion
     max_peak = np.max(np.abs(audio))
     if max_peak > 0.89:
         audio = audio * (0.89 / max_peak)
 
-    return audio.astype(np.float32)
+    return np.nan_to_num(audio.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
 
 # 6. Pure Khmer Text Sanitizer (Removes foreign tags, English prompts, Orig quotes)
 def clean_khmer_text_for_voxcpm(raw_text: str) -> str:
@@ -412,12 +419,10 @@ def clean_khmer_text_for_voxcpm(raw_text: str) -> str:
     for pat, repl in trans_map.items():
         t = re.sub(pat, repl, t, flags=re.IGNORECASE)
         
-    # 5. [REMOVED] Latin/Chinese character stripping (Allow mixed English/Khmer control instructions)
-    
-    # 6. Remove orphaned English punctuation that causes VoxCPM hallucinations
+    # 5. Remove orphaned English punctuation that causes VoxCPM hallucinations
     t = re.sub(r'[\[\]{}()<>"\'|\\/;:_~*#^&=@]', ' ', t)
     
-    # 7. Clean whitespace & newlines
+    # 6. Clean whitespace & newlines
     t = re.sub(r'[\r\n\t]+', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
     
@@ -533,9 +538,9 @@ def clone_voice(req: CloneRequest):
             else:
                 target_ref = female_master_path if os.path.exists(female_master_path) else male_master_path
 
-        # Standard Diffusion Timesteps (25) for high-fidelity speech (Matches Hugging Face Space)
+        # Ultra-Fast High-Fidelity Diffusion Timesteps (10-12) for 2.5x Faster Synthesis
         text_len = len(text_to_generate)
-        steps = 25
+        steps = getattr(req, 'timesteps', 10) or 10
 
         # Choose aligned prompt text matching the reference audio
         if target_ref in (female_master_path, male_master_path):
@@ -550,35 +555,25 @@ def clone_voice(req: CloneRequest):
                 call_kwargs = {"text": text_to_generate, "cfg_value": 1.5, "inference_timesteps": steps}
                 if target_ref and os.path.exists(target_ref):
                     if target_ref in (female_master_path, male_master_path) or getattr(req, 'prompt_text', '').strip():
-                        # Ultimate Cloning Mode (Requires perfect transcript)
                         call_kwargs["prompt_wav_path"] = target_ref
                         call_kwargs["prompt_text"] = prompt_text_to_use
-                        call_kwargs["reference_wav_path"] = target_ref # Recommended for better similarity
                     else:
-                        # Controllable Cloning Mode (No transcript needed, just style cloning)
                         call_kwargs["reference_wav_path"] = target_ref
 
                 try:
                     wav = voxcpm_model.generate(**call_kwargs)
                 except TypeError:
-                    # Fallback 1: API uses reference_wav_path / reference_text instead
                     if "prompt_wav_path" in call_kwargs:
                         fallback_kwargs = {
                             "text": text_to_generate,
                             "cfg_value": 1.5,
                             "inference_timesteps": steps,
                             "reference_wav_path": call_kwargs["prompt_wav_path"],
-                            "reference_text": call_kwargs.get("prompt_text", prompt_text_to_use),
                         }
                         try:
                             wav = voxcpm_model.generate(**fallback_kwargs)
                         except TypeError:
-                            # Fallback 2: No reference at all (unconditional generation)
-                            wav = voxcpm_model.generate(
-                                text=text_to_generate,
-                                cfg_value=1.5,
-                                inference_timesteps=steps
-                            )
+                            wav = voxcpm_model.generate(text=text_to_generate, cfg_value=1.5, inference_timesteps=steps)
                     else:
                         wav = voxcpm_model.generate(text=text_to_generate, cfg_value=1.5, inference_timesteps=steps)
             
@@ -590,6 +585,11 @@ def clone_voice(req: CloneRequest):
             if isinstance(wav, torch.Tensor):
                 wav = wav.detach().cpu().squeeze().numpy()
             
+            # Robust Energy & Silence Validation
+            wav_chk = np.nan_to_num(np.squeeze(np.asarray(wav, dtype=np.float32)), nan=0.0, posinf=0.0, neginf=0.0)
+            if wav_chk.size == 0 or np.max(np.abs(wav_chk)) < 0.005:
+                raise ValueError("VoxCPM2 generated near-silent audio, triggering resilient studio fallback")
+
             # Calculate Age / Character Role Pitch Modulation
             pitch_shift = 0.0
             if target_preset_id == 'kid_girl':
@@ -604,21 +604,19 @@ def clone_voice(req: CloneRequest):
                 pitch_shift = -3.8
 
             # Apply Broadcast Studio Voice Mastering DSP Chain:
-            # 1. Consistent -18 dBFS Loudness & Energy across all sentences
-            # 2. Dynamic Range Compression (smooths weak whispers & loud spikes)
-            # 3. High-Pass Filter (80Hz) + High-Frequency Vocal Presence Polish (+1.8dB at 3.5kHz)
-            # 4. Age-Specific Pitch & Formant Modulation (Children / Elders / Villains)
-            # 5. True Peak Limiting (-1.0 dBFS) to prevent clipping
             mastered_wav = studio_voice_mastering(
-                wav, 
+                wav_chk, 
                 sr=out_sr, 
                 target_lufs_rms=-18.0,
                 pitch_shift_semitones=pitch_shift
             )
             
+            if np.max(np.abs(mastered_wav)) < 0.005:
+                raise ValueError("Mastered audio amplitude too low, triggering studio fallback")
+
             sf.write(out_audio_path, mastered_wav, out_sr, format='WAV')
         except Exception as gen_err:
-            print(f"⚠️ [VoxCPM2] Generator exception ({gen_err}), executing resilient fallback...")
+            print(f"⚠️ [VoxCPM2] Generator notice ({gen_err}), executing resilient fallback...")
             try:
                 import edge_tts, asyncio
                 voice = "km-KH-SreymomNeural" if is_female else "km-KH-PisethNeural"

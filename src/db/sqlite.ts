@@ -135,12 +135,13 @@ export function initDatabase() {
 
   console.log(`[SQLite DB] Initialized high-performance WAL database at: ${DB_PATH}`);
 
-  // Auto-heal / migrate any legacy ephemeral blob: URLs to permanent /api/media/... files
+  // Auto-heal / migrate any legacy ephemeral blob: URLs or mismatched URLs to permanent /api/media/... files
   try {
-    const rows = db.prepare('SELECT id, movie_title, video_url, video_file_name, bgm_track_url, bgm_file_name, raw_data_json FROM recaps').all() as any[];
+    const rows = db.prepare('SELECT id, movie_title, video_url, video_file_name, bgm_track_url, bgm_file_name, total_duration, segments_json, created_at, raw_data_json FROM recaps').all() as any[];
     for (const row of rows) {
-      const fixedVideo = resolveSafeMediaUrl(row.video_url, row.video_file_name, '');
-      const fixedBgm = resolveSafeMediaUrl(row.bgm_track_url, row.bgm_file_name || row.video_file_name, 'bgm_');
+      const durSec = extractRecapDurationSeconds(row);
+      const fixedVideo = resolveSafeMediaUrl(row.video_url, row.video_file_name, '', row.created_at || row.id, durSec);
+      const fixedBgm = resolveSafeMediaUrl(row.bgm_track_url, row.bgm_file_name || row.video_file_name, 'bgm_', row.created_at || row.id);
       
       let changed = false;
       let rawObj: any = {};
@@ -160,7 +161,7 @@ export function initDatabase() {
       if (changed) {
         db.prepare('UPDATE recaps SET video_url = ?, bgm_track_url = ?, raw_data_json = ? WHERE id = ?')
           .run(fixedVideo, fixedBgm, JSON.stringify(rawObj), row.id);
-        console.log(`[SQLite Migration] Auto-healed media URLs for: ${row.id} -> video: ${fixedVideo}`);
+        console.log(`[SQLite Migration] Auto-healed media URLs for: ${row.id} (${row.movie_title}) -> video: ${fixedVideo}, bgm: ${fixedBgm}`);
       }
     }
 
@@ -182,31 +183,178 @@ export function initDatabase() {
 
 const UPLOADS_DIR = path.join(process.cwd(), 'data', 'uploads');
 
-export function findUploadMatch(fileName?: string | null, prefix = ''): string | null {
+// Fast sub-millisecond MP4 duration parser from header box (mvhd)
+export function getMp4Duration(filePath: string): number | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(500000);
+    const bytesRead = fs.readSync(fd, buffer, 0, 500000, 0);
+    fs.closeSync(fd);
+    
+    const idx = buffer.indexOf(Buffer.from('mvhd'));
+    if (idx !== -1 && idx + 32 <= bytesRead) {
+      const version = buffer.readUInt8(idx + 4);
+      if (version === 0) {
+        const timescale = buffer.readUInt32BE(idx + 16);
+        const duration = buffer.readUInt32BE(idx + 20);
+        if (timescale > 0) return duration / timescale;
+      } else if (version === 1) {
+        const timescale = buffer.readUInt32BE(idx + 24);
+        const duration = Number(buffer.readBigUInt64BE(idx + 28));
+        if (timescale > 0) return duration / timescale;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function parseDurationString(timeStr?: string | null): number {
+  if (!timeStr) return 0;
+  const parts = String(timeStr).trim().split(':').map(p => parseFloat(p) || 0);
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  } else if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  const directNum = parseFloat(timeStr);
+  return isNaN(directNum) ? 0 : directNum;
+}
+
+export function extractRecapDurationSeconds(recapOrRow: any): number {
+  if (!recapOrRow) return 0;
+  let dur = parseDurationString(recapOrRow.total_recap_duration_est || recapOrRow.total_duration);
+  let segs: any[] = [];
+  try {
+    if (typeof recapOrRow.segments_json === 'string') {
+      segs = JSON.parse(recapOrRow.segments_json);
+    } else if (Array.isArray(recapOrRow.recap_segments)) {
+      segs = recapOrRow.recap_segments;
+    }
+  } catch {}
+  for (const s of segs) {
+    const end = parseDurationString(s.end_time);
+    if (end > dur) dur = end;
+  }
+  return dur;
+}
+
+export function findUploadMatch(
+  fileName?: string | null, 
+  prefix = '', 
+  targetTimestamp?: number | string | null,
+  targetDurationSec?: number | null
+): string | null {
   if (!fileName || !fs.existsSync(UPLOADS_DIR)) return null;
   try {
     const files = fs.readdirSync(UPLOADS_DIR);
     const safe = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const baseNoExt = safe.replace(/\.[^/.]+$/, '');
     
+    let targetTs: number | null = null;
+    if (typeof targetTimestamp === 'number') {
+      targetTs = targetTimestamp;
+    } else if (typeof targetTimestamp === 'string') {
+      const matchId = targetTimestamp.match(/recap_(\d+)/);
+      if (matchId) {
+        targetTs = parseInt(matchId[1], 10);
+      } else {
+        try {
+          const dt = new Date(targetTimestamp).getTime();
+          if (!isNaN(dt)) targetTs = dt;
+        } catch {}
+      }
+    }
+
     // 1. Exact match
     const exact = files.find(f => f === safe || f === fileName);
-    if (exact) return `/api/media/${exact}`;
+    if (exact && (!targetDurationSec || prefix)) return `/api/media/${exact}`;
 
-    // 2. Prefix + includes match
-    const matched = files.find(f => {
-      if (prefix && !f.startsWith(prefix)) return false;
-      if (!prefix && f.startsWith('bgm_')) return false; // don't accidentally match bgm for video
-      return f.includes(baseNoExt);
-    });
-    if (matched) return `/api/media/${matched}`;
+    // 2. Strict suffix match with timestamp: e.g. 1787023456595_ep1.mp4 for fileName "ep1.mp4"
+    const candidates: { file: string; ts: number; dur?: number | null; durDiff: number; tsDiff: number }[] = [];
+    for (const f of files) {
+      if (prefix && !f.startsWith(prefix)) continue;
+      if (!prefix && (f.startsWith('bgm_') || f.startsWith('clean_') || f.endsWith('_opt.mp4'))) continue;
 
-    // 3. Any contains match
-    const anyMatch = files.find(f => {
-      if (!prefix && f.startsWith('bgm_')) return false;
-      return f.includes(baseNoExt);
-    });
-    if (anyMatch) return `/api/media/${anyMatch}`;
+      let isMatch = false;
+      if (prefix === 'bgm_' && (f.endsWith(`_${safe}.wav`) || f.endsWith(`_${safe}.mp4.wav`) || f.endsWith(`_${baseNoExt}.wav`) || f.endsWith(`_${baseNoExt}.mp4.wav`) || f.endsWith(`_${fileName}`))) {
+        isMatch = true;
+      } else if (f.endsWith(`_${safe}`) || f.endsWith(`_${fileName}`) || f === safe || f === fileName) {
+        isMatch = true;
+      }
+
+      if (isMatch) {
+        const tm = f.match(/^(?:bgm_)?(\d+)_/);
+        const ts = tm ? parseInt(tm[1], 10) : 0;
+        const tsDiff = targetTs ? Math.abs(targetTs - ts) : 0;
+        
+        let dur: number | null = null;
+        let durDiff = 999999;
+        if (!prefix && targetDurationSec && targetDurationSec > 0 && f.endsWith('.mp4')) {
+          dur = getMp4Duration(path.join(UPLOADS_DIR, f));
+          if (dur !== null) {
+            durDiff = Math.abs(targetDurationSec - dur);
+          }
+        }
+        candidates.push({ file: f, ts, dur, durDiff, tsDiff });
+      }
+    }
+
+    if (candidates.length > 0) {
+      if (!prefix && targetDurationSec && targetDurationSec > 0) {
+        // Duration matches take highest priority (e.g. 04:17 matching 256.4s vs 102s)
+        candidates.sort((a, b) => {
+          if (Math.abs(a.durDiff - b.durDiff) > 5) {
+            return a.durDiff - b.durDiff;
+          }
+          return a.tsDiff - b.tsDiff;
+        });
+      } else if (targetTs) {
+        candidates.sort((a, b) => a.tsDiff - b.tsDiff);
+      } else {
+        candidates.sort((a, b) => b.ts - a.ts);
+      }
+      return `/api/media/${candidates[0].file}`;
+    }
+
+    // 3. Exact word boundary match for base name (prevents ep1 from matching ep10, ep11, etc.)
+    const escapedBase = baseNoExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(^|_)${escapedBase}(\\.[^.]+$|$)`, 'i');
+    const wordMatches: { file: string; ts: number; dur?: number | null; durDiff: number; tsDiff: number }[] = [];
+    for (const f of files) {
+      if (prefix && !f.startsWith(prefix)) continue;
+      if (!prefix && (f.startsWith('bgm_') || f.startsWith('clean_') || f.endsWith('_opt.mp4'))) continue;
+      if (regex.test(f)) {
+        const tm = f.match(/^(?:bgm_)?(\d+)_/);
+        const ts = tm ? parseInt(tm[1], 10) : 0;
+        const tsDiff = targetTs ? Math.abs(targetTs - ts) : 0;
+        let dur: number | null = null;
+        let durDiff = 999999;
+        if (!prefix && targetDurationSec && targetDurationSec > 0 && f.endsWith('.mp4')) {
+          dur = getMp4Duration(path.join(UPLOADS_DIR, f));
+          if (dur !== null) {
+            durDiff = Math.abs(targetDurationSec - dur);
+          }
+        }
+        wordMatches.push({ file: f, ts, dur, durDiff, tsDiff });
+      }
+    }
+
+    if (wordMatches.length > 0) {
+      if (!prefix && targetDurationSec && targetDurationSec > 0) {
+        wordMatches.sort((a, b) => {
+          if (Math.abs(a.durDiff - b.durDiff) > 5) {
+            return a.durDiff - b.durDiff;
+          }
+          return a.tsDiff - b.tsDiff;
+        });
+      } else if (targetTs) {
+        wordMatches.sort((a, b) => a.tsDiff - b.tsDiff);
+      } else {
+        wordMatches.sort((a, b) => b.ts - a.ts);
+      }
+      return `/api/media/${wordMatches[0].file}`;
+    }
 
     return null;
   } catch {
@@ -214,16 +362,36 @@ export function findUploadMatch(fileName?: string | null, prefix = ''): string |
   }
 }
 
-export function resolveSafeMediaUrl(url?: string | null, fileName?: string | null, prefix = ''): string | null {
+export function resolveSafeMediaUrl(
+  url?: string | null, 
+  fileName?: string | null, 
+  prefix = '', 
+  targetTimestamp?: number | string | null,
+  targetDurationSec?: number | null
+): string | null {
   if (url && (url.startsWith('/api/media/') || url.includes('/api/media/'))) {
-    return url;
+    const rawFileName = url.replace(/.*\/api\/media\//, '').split('?')[0];
+    const decodedFileName = decodeURIComponent(rawFileName);
+    const fullPath = path.join(UPLOADS_DIR, decodedFileName);
+    if (fs.existsSync(fullPath)) {
+      // If we have targetDurationSec and the existing file's duration is wildly mismatched (e.g. 102s vs 256s)
+      if (!prefix && targetDurationSec && targetDurationSec > 0 && fileName) {
+        const curDur = getMp4Duration(fullPath);
+        if (curDur !== null && Math.abs(curDur - targetDurationSec) > 15) {
+          const betterMatch = findUploadMatch(fileName, prefix, targetTimestamp, targetDurationSec);
+          if (betterMatch) return betterMatch;
+        }
+      }
+      return url;
+    }
   }
+  
   if (url && (url.startsWith('http://') || url.startsWith('https://')) && !url.includes('localhost') && !url.includes('127.0.0.1')) {
     return url;
   }
   
-  // If url is blob: or missing, search data/uploads for permanent file
-  const matched = findUploadMatch(fileName, prefix);
+  // If url is blob: or missing or missing from disk, search data/uploads for permanent file
+  const matched = findUploadMatch(fileName, prefix, targetTimestamp, targetDurationSec);
   if (matched) return matched;
 
   // If still blob: and not resolved in uploads, discard expired blob URL
@@ -288,8 +456,9 @@ export function saveRecapToDb(recap: any): any {
   const createdAt = recap.created_at || now;
   const updatedAt = now;
 
-  const safeVideoUrl = resolveSafeMediaUrl(recap.videoUrl, recap.videoFileName, '');
-  const safeBgmUrl = resolveSafeMediaUrl(recap.bgmTrackUrl, recap.bgmFileName || recap.videoFileName, 'bgm_');
+  const durSec = extractRecapDurationSeconds(recap);
+  const safeVideoUrl = resolveSafeMediaUrl(recap.videoUrl, recap.videoFileName, '', createdAt || id, durSec);
+  const safeBgmUrl = resolveSafeMediaUrl(recap.bgmTrackUrl, recap.bgmFileName || recap.videoFileName, 'bgm_', createdAt || id);
   const targetFolderName = recap.folderName || recap.folder_name || recap.seriesTitle || '';
   const targetFolderId = recap.folderId || recap.folder_id || '';
 
@@ -361,10 +530,11 @@ export function getAllRecapsFromDb(): any[] {
   `);
   const rows = stmt.all();
   return rows.map((row: any) => {
+    const durSec = extractRecapDurationSeconds(row);
     try {
       const parsed = JSON.parse(row.raw_data_json);
-      const safeVideo = resolveSafeMediaUrl(parsed.videoUrl || row.video_url, parsed.videoFileName || row.video_file_name, '');
-      const safeBgm = resolveSafeMediaUrl(parsed.bgmTrackUrl || row.bgm_track_url, parsed.bgmFileName || row.bgm_file_name || row.video_file_name, 'bgm_');
+      const safeVideo = resolveSafeMediaUrl(parsed.videoUrl || row.video_url, parsed.videoFileName || row.video_file_name, '', row.created_at || row.id, durSec);
+      const safeBgm = resolveSafeMediaUrl(parsed.bgmTrackUrl || row.bgm_track_url, parsed.bgmFileName || row.bgm_file_name || row.video_file_name, 'bgm_', row.created_at || row.id);
 
       return {
         ...parsed,
@@ -377,8 +547,8 @@ export function getAllRecapsFromDb(): any[] {
         updated_at: row.updated_at
       };
     } catch {
-      const safeVideo = resolveSafeMediaUrl(row.video_url, row.video_file_name, '');
-      const safeBgm = resolveSafeMediaUrl(row.bgm_track_url, row.bgm_file_name || row.video_file_name, 'bgm_');
+      const safeVideo = resolveSafeMediaUrl(row.video_url, row.video_file_name, '', row.created_at || row.id, durSec);
+      const safeBgm = resolveSafeMediaUrl(row.bgm_track_url, row.bgm_file_name || row.video_file_name, 'bgm_', row.created_at || row.id);
 
       return {
         id: row.id,

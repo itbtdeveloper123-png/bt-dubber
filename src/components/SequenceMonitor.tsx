@@ -51,6 +51,38 @@ const cleanKhmerSpeech = (text: string): string => {
     .replace(/\bHackers?\b/gi, 'ហេកឃ័រ')
     .replace(/\bTeam\b/gi, 'ក្រុម')
     .replace(/\bMonaco\b/gi, 'ម៉ូណាកូ')
+    // Fix known AI translation hallucinations & literal wording
+    .replace(/ទទេទេវលី/g, 'ទទេស្អាត')
+    .replace(/ទទេទេវី/g, 'ទទេស្អាត')
+    .replace(/ទទេទទេ/g, 'ទទេស្អាត')
+    .replace(/សូន្យសូន្យ/g, 'រលាយបាត់សូន្យ')
+    .replace(/ស្ថានទទេ/g, 'ភាពទទេស្អាត')
+    .replace(/ទទេធូលី/g, 'រលាយក្លាយជាធូលីដី')
+    .replace(/រលាយជាស្ថាន/g, 'រលាយបាត់សូន្យ')
+    .replace(/ត្រឹមមួយភ្នែក/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក')
+    .replace(/មួយភ្នែកស្រាប់តែ/g, 'មួយប៉ប្រិចភ្នែកស្រាប់តែ')
+    .replace(/ក្នុងមួយភ្នែក/g, 'ក្នុងមួយប៉ប្រិចភ្នែក')
+    .replace(/ត្រឹមមួយប៉ប្រិច/g, 'ត្រឹមមួយប៉ប្រិចភ្នែក')
+    .replace(/បើកស្ពាននេត្រ/g, 'បើកព្រះនេត្រ')
+    .replace(/បើកស្ថាននេត្រ/g, 'បើកព្រះនេត្រទិព្វ')
+    .replace(/ស្ពាននេត្រ/g, 'ព្រះនេត្រ')
+    .replace(/ស្ថាននេត្រ/g, 'ព្រះនេត្រ')
+    .replace(/ស្ពានភ្នែក/g, 'ភ្នែកទិព្វ')
+    .replace(/ស្ថានភ្នែក/g, 'ភ្នែកទិព្វ')
+    .replace(/ភ្នែកស្ថាន/g, 'ភ្នែកទិព្វ')
+    .replace(/នេត្រស្ថាន/g, 'ព្រះនេត្រទិព្វ')
+    .replace(/កំពុងលង់លក់ក្នុងបន្ទំ/g, 'កំពុងសោយបន្ទំយ៉ាងលង់លក់')
+    .replace(/លង់លក់ក្នុងបន្ទំ/g, 'សោយបន្ទំយ៉ាងលង់លក់')
+    .replace(/ដេកក្នុងបន្ទំ/g, 'សោយបន្ទំ')
+    .replace(/បណ្ដាអ្វីៗទាំងអស់ដែល/g, 'អ្វីៗគ្រប់យ៉ាងដែល')
+    .replace(/បណ្ដាអ្វីៗទាំងអស់/g, 'អ្វីៗគ្រប់យ៉ាង')
+    .replace(/បណ្ដាអ្វីៗគ្រប់យ៉ាង/g, 'អ្វីៗគ្រប់យ៉ាង')
+    .replace(/បណ្ដាមនុស្សទាំងអស់/g, 'មនុស្សគ្រប់គ្នា')
+    .replace(/បណ្ដាពួកយើង/g, 'ពួកយើងទាំងអស់គ្នា')
+    .replace(/បណ្ដាអ្នកទាំងអស់/g, 'អ្នកទាំងអស់គ្នា')
+    .replace(/បណ្ដុះស្ថាន/g, 'ហ្វឹកហាត់វិជ្ជាគុន')
+    .replace(/ដាំដុះក្បាច់គុន/g, 'ហ្វឹកហាត់ក្បាច់គុន')
+    .replace(/ដាំដុះថាមពល/g, 'ចម្រើនថាមពល')
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/[a-zA-Z\u4e00-\u9fa5]+/g, ' ')
     // Allow all Khmer letters, sub-scripts, vowels, punctuation, quotes, numbers
@@ -476,20 +508,18 @@ export const SequenceMonitor: React.FC<SequenceMonitorProps> = ({
                 className="bg-transparent text-slate-200 font-bold focus:outline-none cursor-pointer text-[10px] sm:text-[11px] font-khmer max-w-[110px] sm:max-w-[140px] truncate"
                 title="ជ្រើសរើសប្រភេទសំឡេងនិយាយខ្មែរ (Khmer Voice Persona)"
               >
-                <option value="auto" className="bg-slate-900 text-white">🤖 តាមតួអង្គ (Auto Characters)</option>
-                <optgroup label="🇰🇭 KiriTTS AI & Clone" className="bg-slate-900 text-amber-300">
-                  <option value="kiri_ff" className="bg-slate-900 text-white">🌟 Kiri: ff (Cloud Clone)</option>
-                  <option value="kiri_Chanda" className="bg-slate-900 text-white">👨‍🦱 Kiri: Chanda (ប្រុស)</option>
-                  <option value="kiri_Neary" className="bg-slate-900 text-white">👩‍🦰 Kiri: Neary (ស្រី)</option>
-                  <option value="kiri_Maly" className="bg-slate-900 text-white">👩‍🦰 Kiri: Maly (ស្រី)</option>
-                  <option value="kiri_Bora" className="bg-slate-900 text-white">👨‍🦱 Kiri: Bora (ប្រុស)</option>
-                </optgroup>
-                <optgroup label="🎙️ Microsoft Neural" className="bg-slate-900 text-slate-400">
-                  <option value="male" className="bg-slate-900 text-white">👨‍🦱 Piseth (ពិសិដ្ឋ)</option>
-                  <option value="female" className="bg-slate-900 text-white">👩‍🦰 Sreymom (ស្រីមុំ)</option>
+                <option value="auto" className="bg-slate-900 text-white">✨ តាមតួអង្គ (Auto Piseth & Sreymom)</option>
+                <optgroup label="👨‍🦱 សំឡេង Piseth (ពិសិដ្ឋ)" className="bg-slate-900 text-blue-300">
                   <option value="narrator" className="bg-slate-900 text-white">🎙️ Piseth (អ្នកសម្រាយ)</option>
+                  <option value="male" className="bg-slate-900 text-white">👨‍🦱 Piseth (តួប្រុស)</option>
+                  <option value="child_boy" className="bg-slate-900 text-white">👦 Piseth (ក្មេងប្រុស)</option>
                   <option value="male_elder" className="bg-slate-900 text-white">👴 Piseth (តាចាស់)</option>
+                </optgroup>
+                <optgroup label="👩‍🦰 សំឡេង Sreymom (ស្រីមុំ)" className="bg-slate-900 text-pink-300">
+                  <option value="female" className="bg-slate-900 text-white">👩‍🦰 Sreymom (តួស្រី)</option>
+                  <option value="child_girl" className="bg-slate-900 text-white">👧 Sreymom (ក្មេងស្រី)</option>
                   <option value="child" className="bg-slate-900 text-white">👶 Sreymom (កុមារ)</option>
+                  <option value="female_elder" className="bg-slate-900 text-white">👵 Sreymom (យាយចាស់)</option>
                 </optgroup>
               </select>
             </div>

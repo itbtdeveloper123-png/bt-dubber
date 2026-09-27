@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Mic, Scissors, Upload, Sparkles, Key, History, Film,
   Plus, CheckCircle2, Clock, ChevronRight, Database, X, Play, Radio, Layers
 } from 'lucide-react';
 import { MovieRecapResult } from '../types';
+import { getDailyUsage } from '../utils/apiQuotaTracker';
 
 interface StudioSidebarProps {
   activeMode: 'dubbing' | 'sequence' | 'cutter';
@@ -11,7 +12,6 @@ interface StudioSidebarProps {
   onOpenUpload: () => void;
   onOpenTikTokModal?: () => void;
   onOpenApiKeyModal?: () => void;
-  onOpenVoiceCloningModal?: () => void;
   hasCustomApiKey?: boolean;
   onInsertToSequence?: () => void;
   onInsertFolderToSequence?: (folderName: string, items: MovieRecapResult[]) => void;
@@ -27,7 +27,6 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onOpenUpload,
   onOpenTikTokModal,
   onOpenApiKeyModal,
-  onOpenVoiceCloningModal,
   hasCustomApiKey = false,
   onInsertToSequence,
   onInsertFolderToSequence,
@@ -37,6 +36,15 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
   onOpenSavedModal
 }) => {
   const [showRecentDrawer, setShowRecentDrawer] = useState(false);
+  const [quota, setQuota] = useState(() => getDailyUsage('translation'));
+
+  useEffect(() => {
+    const handleQuotaUpdate = () => {
+      setQuota(getDailyUsage('translation'));
+    };
+    window.addEventListener('gemini_quota_updated', handleQuotaUpdate);
+    return () => window.removeEventListener('gemini_quota_updated', handleQuotaUpdate);
+  }, []);
 
   return (
     <>
@@ -48,8 +56,8 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
         />
       )}
 
-      {/* Main Left Sidebar Dock */}
-      <aside className="relative w-14 sm:w-16 bg-slate-900 border-r border-slate-800 flex flex-col items-center py-2.5 justify-between text-slate-400 z-35 shrink-0 select-none shadow-xl">
+      {/* Main Left Sidebar Dock (Hidden on mobile, replaced by Mobile Tools Tab) */}
+      <aside className="hidden md:flex relative w-14 sm:w-16 bg-slate-900 border-r border-slate-800 flex-col items-center py-2.5 justify-between text-slate-400 z-35 shrink-0 select-none shadow-xl">
 
         {/* Top: Brand Icon & Navigation Modes */}
         <div className="flex flex-col items-center gap-2 w-full px-1.5">
@@ -149,18 +157,6 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
             <span className="text-[9px] font-bold mt-1 font-khmer">Upload</span>
           </button>
 
-          {/* AI Voice Cloning Button */}
-          {onOpenVoiceCloningModal && (
-            <button
-              onClick={onOpenVoiceCloningModal}
-              className="w-full py-2 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-purple-400 flex flex-col items-center justify-center transition cursor-pointer group"
-              title="🎙️ AI Voice Cloning (ក្លូនសំឡេងផ្ទាល់ខ្លួន)"
-            >
-              <Radio className="w-4 h-4 text-purple-400 group-hover:scale-110 transition" />
-              <span className="text-[8px] font-bold mt-1 font-khmer">Voice</span>
-            </button>
-          )}
-
           {/* TikTok Importer Button */}
           {onOpenTikTokModal && (
             <button
@@ -188,18 +184,22 @@ export const StudioSidebar: React.FC<StudioSidebarProps> = ({
             <span className="text-[8px] font-mono text-emerald-400 font-bold mt-0.5">DB</span>
           </div>
 
-          {/* API Key Modal Button */}
+          {/* API Key Modal Button with Live Quota Counter */}
           {onOpenApiKeyModal && (
             <button
               onClick={onOpenApiKeyModal}
-              title="កំណត់ Gemini API Key (API Key Settings)"
-              className={`w-full py-2 rounded-xl flex flex-col items-center justify-center transition cursor-pointer ${hasCustomApiKey
+              title={`កំណត់ Gemini API Key (បានប្រើ ${quota.count}/${quota.limit} Requests ថ្ងៃនេះ)`}
+              className={`w-full py-2 rounded-xl flex flex-col items-center justify-center transition cursor-pointer relative group ${
+                hasCustomApiKey
                   ? 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-400 border border-emerald-800/60'
                   : 'bg-amber-950/60 hover:bg-amber-900/80 text-amber-400 border border-amber-800/60 animate-pulse'
-                }`}
+              }`}
             >
               <Key className="w-3.5 h-3.5" />
               <span className="text-[8px] font-bold mt-0.5 font-khmer">API Key</span>
+              <span className="text-[7.5px] font-mono px-1 py-0.2 bg-slate-900/90 text-amber-300 rounded border border-slate-700/80 mt-0.5">
+                {quota.count}/{quota.limit >= 1000 ? `${(quota.limit / 1000).toFixed(1)}k` : quota.limit}
+              </span>
             </button>
           )}
         </div>

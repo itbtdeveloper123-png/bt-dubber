@@ -45,40 +45,28 @@ def parse_timecode_to_seconds(tc):
         return 0.0
 
 def clean_khmer_speech_text(text):
-    """Clean Khmer speech text, strip speaker prefixes, English annotations and foreign terms"""
+    """Clean Khmer speech text, strip speaker prefixes, English annotations and foreign terms without destroying Khmer words"""
     if not text:
         return ""
     cleaned = str(text)
     # Strip foreign annotations like Orig: "..."
     cleaned = re.sub(r'Orig\s*:\s*["\'].*?["\']', '', cleaned, flags=re.IGNORECASE)
-    # Strip bracketed notes like (Note: ...), [Sound: ...]
-    cleaned = re.sub(r'\(.*?\)|\[.*?\]', '', cleaned)
-    # Strip speaker prefixes
-    cleaned = re.sub(r'^(តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|មេក្រុម|មេបញ្ជាការ|Marcus|Elena|[^\s:៖]{2,15})\s*[:៖-]\s*', '', cleaned, flags=re.IGNORECASE)
-    # Transliterate common words
-    cleaned = re.sub(r'\bMarcus\b', 'ម៉ាកុស', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bElena\b', 'អេលេណា', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bSWAT\b', 'ស្វាត', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bCyber\b', 'សាយប័រ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bVault\b', 'វ៉ូល', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bPolice\b', 'ប៉ូលីស', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bHeist\b', 'ហាយស៍', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bFlash\b', 'ហ្វ្លាស', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bLaser\b', 'ឡាស៊ែរ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bHackers?\b', 'ហេកឃ័រ', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bTeam\b', 'ក្រុម', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bMonaco\b', 'ម៉ូណាកូ', cleaned, flags=re.IGNORECASE)
+    # Strip purely English metadata annotations like (Note: ...), [Music], [Sound]
+    cleaned = re.sub(r'\((?:Note|Sound|Music|SFX|Audio|Scene)[^)]*\)', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\[(?:Note|Sound|Music|SFX|Audio|Scene)[^\]]*\]', '', cleaned, flags=re.IGNORECASE)
+    # Strip bracket symbols so Khmer text inside is preserved 100%
+    cleaned = re.sub(r'[()[\]{}]', ' ', cleaned)
+    # Strip leading speaker prefixes ONLY if followed by colon (e.g. "តួប្រុស: ", "អ្នកសម្រាយ: ")
+    cleaned = re.sub(r'^(?:តួប្រុស|តួស្រី|អ្នកសម្រាយ|អ្នកសម្រាយរឿង|តាចាស់|យាយចាស់|កុមារ|កូនក្មេង|ក្មេងប្រុស|ក្មេងស្រី|មេក្រុម|មេបញ្ជាការ)\s*[:៖]\s*', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned)
-    cleaned = re.sub(r'[a-zA-Z\u4e00-\u9fa5]+', ' ', cleaned)
-    cleaned = re.sub(r'[^\u1780-\u17FF0-9\s.,!?«»""\'\'()\-—៖។ៗ]', '', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
+    return cleaned or str(text).strip()
 
 def stretch_audio_to_fit(audio_path, target_duration, temp_dir):
     """
     If actual audio duration is longer than the visual scene window target_duration,
-    use FFmpeg atempo filter to accelerate the audio cleanly (1.05x - 1.55x)
-    so speech finishes synchronously with the video scene without drifting behind!
+    use FFmpeg atempo filter to accelerate the audio cleanly (1.05x - 1.85x)
+    so speech finishes synchronously with the video scene without cutting words off!
     """
     try:
         import soundfile as sf
@@ -93,7 +81,7 @@ def stretch_audio_to_fit(audio_path, target_duration, temp_dir):
         if speed_factor < 1.04:
             return audio_path
             
-        speed_factor = min(1.55, max(1.05, speed_factor))
+        speed_factor = min(1.85, max(1.05, speed_factor))
         out_stretched = os.path.join(temp_dir, f"stretched_{os.path.basename(audio_path)}")
         cmd = [
             FFMPEG_EXE, "-y", "-i", audio_path,
@@ -108,241 +96,82 @@ def stretch_audio_to_fit(audio_path, target_duration, temp_dir):
         sys.stderr.write(f"stretch_audio_to_fit notice: {e}\n")
         return audio_path
 
-def fetch_kiritts_audio(text, voice_name, output_path):
-    """Fetch audio directly from KiriTTS API for video segment rendering"""
-    try:
-        import urllib.request
-        import json
-        api_key = os.environ.get("KIRITTS_API_KEY", "").strip()
-        if not api_key:
-            return False
-        clean_voice = voice_name.replace("kiri_", "")
-        api_url = os.environ.get("KIRITTS_API_URL", "https://api.kiritts.com/v1").rstrip("/") + "/audio/speech"
-        data = json.dumps({
-            "model": "tts-1",
-            "input": text,
-            "voice": clean_voice,
-            "response_format": "mp3"
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            api_url,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "BT-Dubber-Renderer/1.0"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=30) as response:
-            if response.status == 200:
-                with open(output_path, "wb") as f:
-                    f.write(response.read())
-                return True
-    except Exception as e:
-        sys.stderr.write(f"KiriTTS video render error: {e}\n")
-    return False
-
-def fetch_voxcpm_audio(text, colab_url, preset_id, gender, sample_path, output_path):
-    """Fetch audio directly from Colab VoxCPM2 API for video segment rendering"""
-    try:
-        import urllib.request
-        import json
-        import base64
-        url = (colab_url or os.environ.get("VOXCPM2_API_URL", "")).strip().rstrip("/")
-        if not url:
-            return False
-        
-        audio_b64 = ""
-        if sample_path and os.path.exists(sample_path):
-            with open(sample_path, "rb") as f:
-                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-                
-        api_url = f"{url}/api/clone-voice"
-        payload = {
-            "text": text,
-            "target_audio_base64": audio_b64,
-            "preset_id": preset_id or ("female_sweet" if gender == "female" else "male_hero"),
-            "gender": gender or "male",
-            "model": "voxcpm2"
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            api_url,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "BT-Dubber-Renderer/1.0"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=45) as response:
-            if response.status == 200:
-                res_data = json.loads(response.read().decode("utf-8"))
-                if res_data.get("audio_base64"):
-                    with open(output_path, "wb") as f:
-                        f.write(base64.b64decode(res_data["audio_base64"]))
-                    return True
-    except Exception as e:
-        sys.stderr.write(f"VoxCPM video render notice: {e}\n")
-    return False
-
-async def generate_segment_tts_audio(text, gender, output_path, speed_rate="+25%", emotion="neutral"):
-    """Generate Edge TTS, KiriTTS or VoxCPM2 audio file for Khmer speech line with dynamic emotion expressiveness"""
+async def generate_segment_tts_audio(text, gender, output_path, speed_rate="+32%", emotion="neutral"):
+    """Generate 100% Native Edge TTS audio file for Khmer speech using Piseth and Sreymom Neural voices with accurate character pitch calibration"""
     try:
         import edge_tts
         import re
-        voice = "km-KH-SreymomNeural"
-        pitch_num = 0
         g = (gender or "narrator").lower()
         
-        is_kiri = False
-        kiri_voice = "Chanda"
-        is_voxcpm = False
-        voxcpm_colab_url = ""
-        voxcpm_preset_id = ""
-        voxcpm_gender = "male"
-        
-        if g.startswith("kiri_"):
-            is_kiri = True
-            kiri_voice = g.replace("kiri_", "")
-
-        sample_file_path = None
-        if g.startswith("voice_"):
-            try:
-                import sqlite3
-                conn = sqlite3.connect("data/dubber.db")
-                c = conn.cursor()
-                c.execute("SELECT base_voice, pitch_offset, speed_rate, sample_file_name, provider, kiri_voice_id, colab_url, gender, sample_audio_url, audio_base64 FROM cloned_voices WHERE id = ?", (gender,))
-                row = c.fetchone()
-                conn.close()
-                if row:
-                    if len(row) > 4 and (row[4] == 'kiri' or (row[0] and row[0].startswith('kiri_')) or (len(row) > 5 and row[5])):
-                        is_kiri = True
-                        kiri_voice = (row[5] if len(row) > 5 and row[5] else row[0] or "Chanda").replace("kiri_", "")
-                    elif len(row) > 4 and (row[4] == 'voxcpm2' or (len(row) > 6 and row[6])):
-                        is_voxcpm = True
-                        voxcpm_colab_url = (row[6] if len(row) > 6 and row[6] else os.environ.get("VOXCPM2_API_URL", "")).strip()
-                        voxcpm_gender = row[7] if len(row) > 7 and row[7] else ("female" if "ស្រី" in g or "female" in g else "male")
-                        s_url = row[8] if len(row) > 8 and row[8] else ""
-                        a_b64 = row[9] if len(row) > 9 and row[9] else ""
-                        if s_url.startswith("preset:"):
-                            voxcpm_preset_id = s_url.replace("preset:", "")
-                        elif a_b64.startswith("preset:"):
-                            voxcpm_preset_id = a_b64.replace("preset:", "")
-                        if len(row) > 3 and row[3]:
-                            s_path = os.path.join("data", "cloned_voices", row[3])
-                            if os.path.exists(s_path):
-                                sample_file_path = s_path
-                    else:
-                        voice = row[0] or "km-KH-PisethNeural"
-                        pitch_num = row[1] or 0
-                        if len(row) > 3 and row[3]:
-                            s_path = os.path.join("data", "cloned_voices", row[3])
-                            if os.path.exists(s_path):
-                                sample_file_path = s_path
-            except Exception as e:
-                sys.stderr.write(f"Cloned voice db lookup notice: {e}\n")
-        elif g in ["child_boy", "boy", "kid_boy"]:
+        # 1. Determine Voice & Base Pitch/Rate Calibration by Character Persona
+        # Male elder / Grandfather / Old man
+        if any(k in g for k in ["male_elder", "elder_male", "grandfather", "old_man", "តា", "លោកតា", "ព្រឹទ្ធាចារ្យ"]):
             voice = "km-KH-PisethNeural"
-            pitch_num = 30
-            try:
-                import sqlite3
-                conn = sqlite3.connect("data/dubber.db")
-                c = conn.cursor()
-                c.execute("SELECT sample_file_name FROM cloned_voices WHERE gender = 'male' ORDER BY created_at DESC LIMIT 1")
-                row = c.fetchone()
-                conn.close()
-                if row and row[0]:
-                    s_path = os.path.join("data", "cloned_voices", row[0])
-                    if os.path.exists(s_path):
-                        sample_file_path = s_path
-            except Exception:
-                pass
-        elif g in ["child_girl", "girl", "kid_girl", "child", "kid"]:
+            pitch_num = -15
+            role_rate_offset = -8
+        # Female elder / Grandmother / Old woman
+        elif any(k in g for k in ["female_elder", "elder_female", "grandmother", "old_woman", "យាយ", "លោកយាយ"]):
             voice = "km-KH-SreymomNeural"
-            pitch_num = 36
-            try:
-                import sqlite3
-                conn = sqlite3.connect("data/dubber.db")
-                c = conn.cursor()
-                c.execute("SELECT sample_file_name FROM cloned_voices WHERE gender = 'female' ORDER BY created_at DESC LIMIT 1")
-                row = c.fetchone()
-                conn.close()
-                if row and row[0]:
-                    s_path = os.path.join("data", "cloned_voices", row[0])
-                    if os.path.exists(s_path):
-                        sample_file_path = s_path
-            except Exception:
-                pass
-        elif g in ["male", "man"]:
+            pitch_num = -12
+            role_rate_offset = -8
+        # Child boy / Little boy
+        elif any(k in g for k in ["child_boy", "boy", "ក្មេងប្រុស", "កូនប្រុស", "ប្អូនប្រុស"]):
             voice = "km-KH-PisethNeural"
-            pitch_num = -5
-        elif g in ["male_elder", "elder"]:
-            voice = "km-KH-PisethNeural"
-            pitch_num = -20
-        elif g in ["female_elder"]:
+            pitch_num = 24
+            role_rate_offset = 12
+        # Child girl / Little girl / General Child
+        elif any(k in g for k in ["child_girl", "girl", "child", "ក្មេងស្រី", "កូនស្រី", "ប្អូនស្រី", "កុមារ", "ក្មេង"]):
             voice = "km-KH-SreymomNeural"
-            pitch_num = -10
-        elif g in ["villain"]:
+            pitch_num = 28
+            role_rate_offset = 12
+        # Villain / Heavy Dark Voice
+        elif any(k in g for k in ["villain", "monster", "demon", "អាក្រក់", "ចោរ", "បិសាច"]):
             voice = "km-KH-PisethNeural"
-            pitch_num = -30
+            pitch_num = -25
+            role_rate_offset = 0
+        # Female / Young Woman
+        elif any(k in g for k in ["female", "sreymom", "woman", "ស្រី", "នាង", "កញ្ញា", "អ្នកស្រី"]):
+            voice = "km-KH-SreymomNeural"
+            pitch_num = 0
+            role_rate_offset = 0
+        # Male / Young Man / Narrator / Default
+        else:
+            voice = "km-KH-PisethNeural"
+            pitch_num = 0
+            role_rate_offset = 0
 
-        # Emotion pitch and rate offset calculation
+        # Emotion pitch and rate modulation
         emo = (emotion or "neutral").lower()
-        emo_pitch_offset = 0
-        emo_rate_offset = 0
+        emo_pitch = 0
+        emo_rate = 0
         if emo in ["angry", "aggressive"]:
-            emo_pitch_offset = 18
-            emo_rate_offset = 15
+            emo_pitch, emo_rate = 14, 12
         elif emo in ["sad", "crying", "emotional"]:
-            emo_pitch_offset = -14
-            emo_rate_offset = -12
+            emo_pitch, emo_rate = -10, -10
         elif emo in ["excited", "happy"]:
-            emo_pitch_offset = 14
-            emo_rate_offset = 12
+            emo_pitch, emo_rate = 12, 10
         elif emo in ["fear", "tense", "shocked"]:
-            emo_pitch_offset = 16
-            emo_rate_offset = 8
+            emo_pitch, emo_rate = 14, 8
         elif emo in ["whisper", "mysterious"]:
-            emo_pitch_offset = -16
-            emo_rate_offset = -10
+            emo_pitch, emo_rate = -14, -8
         elif emo in ["dramatic"]:
-            emo_pitch_offset = 10
-            emo_rate_offset = 15
+            emo_pitch, emo_rate = 8, 12
 
-        # For Cloned Voices, lock pitch 100% stable so character identity never shifts
-        if sample_file_path:
-            emo_pitch_offset = 0
-            emo_rate_offset = int(round(emo_rate_offset * 0.3))
+        final_pitch = pitch_num + emo_pitch
+        pitch_str = f"+{final_pitch}Hz" if final_pitch >= 0 else f"{final_pitch}Hz"
 
-        final_pitch_num = pitch_num + emo_pitch_offset
-        pitch = f"+{final_pitch_num}Hz" if final_pitch_num >= 0 else f"{final_pitch_num}Hz"
+        base_rate = 25
+        m = re.search(r'([+-]?\d+)', str(speed_rate))
+        if m:
+            base_rate = int(m.group(1))
+        final_rate = max(-20, min(60, base_rate + emo_rate + role_rate_offset))
+        rate_str = f"+{final_rate}%" if final_rate >= 0 else f"{final_rate}%"
 
-        # Calculate speed rate with emotion
-        base_rate_num = 25
-        try:
-            m = re.search(r'([+-]?\d+)', speed_rate)
-            if m:
-                base_rate_num = int(m.group(1))
-        except:
-            pass
-        final_rate_num = max(-20, min(60, base_rate_num + emo_rate_offset))
-        rate_str = f"+{final_rate_num}%" if final_rate_num >= 0 else f"{final_rate_num}%"
-            
-        if is_voxcpm:
-            if fetch_voxcpm_audio(text, voxcpm_colab_url, voxcpm_preset_id, voxcpm_gender, sample_file_path, output_path):
-                return True
-            sys.stderr.write(f"VoxCPM synthesis failed for '{text[:20]}...', falling back to Edge Neural TTS\n")
-
-        if is_kiri:
-            if fetch_kiritts_audio(text, kiri_voice, output_path):
-                return True
-            sys.stderr.write(f"KiriTTS synthesis failed for '{text[:20]}...', falling back to Edge TTS\n")
-
-        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch=pitch)
+        communicate = edge_tts.Communicate(text, voice, rate=rate_str, pitch=pitch_str)
         await communicate.save(output_path)
         return True
     except Exception as e:
-        sys.stderr.write(f"TTS gen notice for '{text[:20]}...': {e}\n")
+        sys.stderr.write(f"TTS gen error for '{text[:20]}...': {e}\n")
         return False
 
 def escape_ffmpeg_filter_path(p):
@@ -391,38 +220,45 @@ def get_khmer_fonts_dir():
     return ""
 
 def probe_video_stream(video_path):
-    """Probe video dimensions and aspect ratio using FFprobe/FFmpeg"""
+    """Probe video dimensions, aspect ratio, audio stream presence, and duration using FFprobe/FFmpeg"""
     try:
         cmd = [FFMPEG_EXE, "-i", video_path]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out = res.stderr or res.stdout
+        w, h, duration = 1920, 1080, 0.0
         match = re.search(r'Video:.*,\s*(\d{2,5})x(\d{2,5})', out)
         if match:
             w = int(match.group(1))
             h = int(match.group(2))
-            return {"width": w, "height": h, "is_portrait": h > w}
+        # Extract duration: "Duration: HH:MM:SS.cc"
+        dur_match = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.?\d*)', out)
+        if dur_match:
+            duration = (int(dur_match.group(1)) * 3600
+                        + int(dur_match.group(2)) * 60
+                        + float(dur_match.group(3)))
+        has_audio = bool(re.search(r'Stream #.*: Audio:', out))
+        return {"width": w, "height": h, "is_portrait": h > w, "duration": duration, "has_audio": has_audio}
     except Exception as e:
         sys.stderr.write(f"Probe video error: {e}\n")
-    return {"width": 1920, "height": 1080, "is_portrait": False}
+    return {"width": 1920, "height": 1080, "is_portrait": False, "duration": 0.0, "has_audio": False}
 
 def get_optimal_video_encoder():
-    """Detect and select the fastest available hardware video encoder (Intel QSV, NVENC, or CPU ultrafast)"""
+    """Detect and select the fastest available stable video encoder (NVENC or multi-threaded CPU veryfast)"""
     candidates = [
-        ["-c:v", "h264_qsv", "-global_quality", "22", "-look_ahead", "0"],
-        ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "22"],
-        ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "0"]
+        ["-c:v", "h264_nvenc", "-preset", "p2", "-cq", "22"],
+        ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "0"]
     ]
     for enc_opt in candidates:
         enc = enc_opt[1]
         try:
-            cmd = [FFMPEG_EXE, "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.05", *enc_opt, "-f", "null", "-"]
+            cmd = [FFMPEG_EXE, "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.05", *enc_opt, "-pix_fmt", "yuv420p", "-f", "null", "-"]
             r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if r.returncode == 0:
-                sys.stderr.write(f"⚡ [Hardware Accelerator] Using ultra-fast encoder: {enc}\n")
+                sys.stderr.write(f"⚡ [Video Encoder] Using encoder: {enc}\n")
                 return enc_opt
         except Exception:
             pass
-    return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-threads", "0"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "0"]
 
 def split_khmer_into_words(text):
     """Split Khmer text into whole unbroken words without breaking ligatures, coengs, or vowels"""
@@ -630,6 +466,9 @@ def generate_khmer_subtitle_overlays(segments, style_config, probe_info, resolut
                     concat_lines.append(f"duration {w_dur:.3f}")
                     current_time = w_end
 
+        if card_idx == 0:
+            return None
+
         # Append final blank frame to prevent freezing on the last subtitle frame
         concat_lines.append(f"file 'sub_blank.png'")
         concat_lines.append(f"duration 3600.0")
@@ -777,6 +616,14 @@ def render_video_sync(job_config):
             male_mapped = voice_mapping.get("male")
             female_mapped = voice_mapping.get("female")
             narrator_mapped = voice_mapping.get("narrator")
+            child_mapped = voice_mapping.get("child")
+            child_boy_mapped = voice_mapping.get("child_boy")
+            child_girl_mapped = voice_mapping.get("child_girl")
+            male_elder_mapped = voice_mapping.get("male_elder")
+            female_elder_mapped = voice_mapping.get("female_elder")
+            villain_mapped = voice_mapping.get("villain")
+
+            last_resolved_gender = "narrator"
             
             for idx, seg in enumerate(segments):
                 raw_script = seg.get("khmer_script", "").strip()
@@ -787,18 +634,39 @@ def render_video_sync(job_config):
                 end_sec = parse_timecode_to_seconds(seg.get("end_time", "00:00"))
                 target_dur = max(0.6, end_sec - start_sec) if end_sec > start_sec else 3.0
                 
-                raw_gender = (seg.get("speaker_gender") or "female").lower()
+                raw_gender = (seg.get("speaker_gender") or "").strip().lower()
+                speaker_name = (seg.get("speaker_name") or seg.get("character") or "").strip().lower()
                 
+                # Check for Cloned voice ID direct assignment
                 if raw_gender.startswith("voice_"):
                     gender = raw_gender
-                elif raw_gender in ["male", "male_elder", "villain"]:
-                    gender = male_mapped or raw_gender
-                elif raw_gender in ["female", "female_elder", "child"]:
-                    gender = female_mapped or raw_gender
-                elif raw_gender == "narrator":
-                    gender = narrator_mapped or "male"
+                elif voice_mapping and raw_gender in voice_mapping and voice_mapping[raw_gender]:
+                    gender = voice_mapping[raw_gender]
                 else:
-                    gender = female_mapped or raw_gender
+                    combined_tag = f"{raw_gender} {speaker_name}".lower()
+                    if any(k in combined_tag for k in ["male_elder", "grandfather", "old_man", "តា", "លោកតា", "ព្រឹទ្ធាចារ្យ"]):
+                        gender = male_elder_mapped or male_mapped or "male_elder"
+                    elif any(k in combined_tag for k in ["female_elder", "grandmother", "old_woman", "យាយ", "លោកយាយ"]):
+                        gender = female_elder_mapped or female_mapped or "female_elder"
+                    elif any(k in combined_tag for k in ["child_boy", "ក្មេងប្រុស", "កូនប្រុស", "ប្អូនប្រុស"]):
+                        gender = child_boy_mapped or child_mapped or male_mapped or "child_boy"
+                    elif any(k in combined_tag for k in ["child_girl", "ក្មេងស្រី", "កូនស្រី", "ប្អូនស្រី"]):
+                        gender = child_girl_mapped or child_mapped or female_mapped or "child_girl"
+                    elif any(k in combined_tag for k in ["child", "កុមារ", "ក្មេង"]):
+                        gender = child_mapped or female_mapped or "child_girl"
+                    elif any(k in combined_tag for k in ["villain", "អាក្រក់", "ចោរ", "បិសាច"]):
+                        gender = villain_mapped or male_mapped or "villain"
+                    elif any(k in combined_tag for k in ["female", "ស្រី", "នាង", "កញ្ញា", "អ្នកស្រី"]):
+                        gender = female_mapped or "female"
+                    elif any(k in combined_tag for k in ["male", "ប្រុស", "លោក", "បង", "បុរស"]):
+                        gender = male_mapped or "male"
+                    elif any(k in combined_tag for k in ["narrator", "អ្នកសម្រាយ", "អ្នករៀបរាប់", "ពិធីករ"]):
+                        gender = narrator_mapped or male_mapped or "narrator"
+                    else:
+                        # Keep continuity or default to narrator (Piseth)
+                        gender = last_resolved_gender if last_resolved_gender else "narrator"
+
+                last_resolved_gender = gender
 
                 emotion = seg.get("voice_emotion") or seg.get("voice_tone") or "neutral"
                 seg_speed = seg.get("playback_speed")
@@ -825,6 +693,7 @@ def render_video_sync(job_config):
         # 2. Build Master Narration Audio Track with Dynamic Scene-Synchronized Pacing
         has_tts = len(tts_clips) > 0
         master_narration_path = None
+        actual_narration_dur = 0.0
         
         if has_tts:
             try:
@@ -834,26 +703,43 @@ def render_video_sync(job_config):
                 sr = 44100
                 vid_dur = float(probe_info.get("duration", 0.0) or 0.0)
                 
-                # Estimate total duration
-                max_clip_end = max([c["start_sec"] + 15.0 for c in tts_clips] or [10.0])
-                total_duration = max(vid_dur, max_clip_end, 10.0)
-                total_samples = int(np.ceil(total_duration * sr)) + (sr * 5)
+                # Estimate total duration from actual clip end times
+                max_clip_end = max(
+                    [c.get("end_sec", c["start_sec"]) for c in tts_clips] + [10.0]
+                )
+                total_duration = max(vid_dur, max_clip_end + 10.0, 10.0)
+                total_samples = int(np.ceil(total_duration * sr)) + (sr * 10)
                 
                 # 2-channel 32-bit float master array
                 master_audio = np.zeros((total_samples, 2), dtype=np.float32)
                 
                 # Sort clips chronologically by start_sec
                 sorted_clips = sorted(tts_clips, key=lambda x: x["start_sec"])
+                max_speech_sample = 0
                 
-                for clip in sorted_clips:
+                for c_idx, clip in enumerate(sorted_clips):
                     c_path = clip["path"]
                     if not os.path.exists(c_path):
                         continue
                     try:
-                        # Auto-fit audio duration to scene duration window using FFmpeg atempo
-                        target_dur = float(clip.get("target_dur", 0.0) or 0.0)
-                        if target_dur > 0.4:
-                            c_path = stretch_audio_to_fit(c_path, target_dur, temp_dir)
+                        scene_start = clip["start_sec"]
+                        scene_end = float(clip.get("end_sec", scene_start + 3.0) or scene_start + 3.0)
+                        
+                        # Use next clip's start as scene boundary (only if there is a next clip)
+                        if c_idx + 1 < len(sorted_clips):
+                            next_start = sorted_clips[c_idx + 1]["start_sec"]
+                            scene_end = min(scene_end, next_start)
+                            scene_window = max(0.4, scene_end - scene_start)
+                            target_dur = float(clip.get("target_dur", scene_window) or scene_window)
+                            target_dur = min(target_dur, scene_window)
+
+                            # Gently fit audio duration to scene window using FFmpeg atempo if needed
+                            if target_dur > 0.4:
+                                c_path = stretch_audio_to_fit(c_path, target_dur, temp_dir)
+                        else:
+                            # FOR THE FINAL SCENE / CLIP: NEVER COMPRESS OR ACCELERATE SHORT!
+                            # Let the narration speak completely and naturally until the sentence ends!
+                            pass
 
                         data, file_sr = sf.read(c_path)
                         # Convert to stereo
@@ -875,28 +761,39 @@ def render_video_sync(job_config):
                         gain = float(clip.get("volume_gain", 1.0) or 1.0)
                         clip_stereo = clip_stereo * gain
                         
-                        # Pin accurately to the visual scene start timestamp (Never drift behind!)
-                        target_start_sample = max(0, int(round(clip["start_sec"] * sr)))
+                        # Pin accurately to the visual scene start timestamp without chopping words
+                        target_start_sample = max(0, int(round(scene_start * sr)))
                         clip_len = len(clip_stereo)
                         target_end_sample = target_start_sample + clip_len
                         
-                        # Expand master array dynamically if needed
+                        if target_end_sample > max_speech_sample:
+                            max_speech_sample = target_end_sample
+                        
+                        # Expand master array dynamically if needed so full script is preserved
                         if target_end_sample > len(master_audio):
-                            pad = np.zeros((target_end_sample - len(master_audio) + sr * 5, 2), dtype=np.float32)
+                            pad = np.zeros((target_end_sample - len(master_audio) + sr * 10, 2), dtype=np.float32)
                             master_audio = np.vstack([master_audio, pad])
                             
                         master_audio[target_start_sample:target_end_sample] += clip_stereo
                     except Exception as clip_err:
                         sys.stderr.write(f"Clip mix notice for {c_path}: {clip_err}\n")
                         
+                # Trim master array to exactly where the last speech sample finishes
+                if max_speech_sample > 0:
+                    trim_end = min(len(master_audio), max_speech_sample + int(sr * 0.4))
+                    master_audio = master_audio[:trim_end]
+                    actual_narration_dur = float(trim_end) / float(sr)
+                else:
+                    actual_narration_dur = float(len(master_audio)) / float(sr)
+
                 # Soft-clip/normalize to prevent digital distortion
-                max_peak = np.max(np.abs(master_audio))
+                max_peak = np.max(np.abs(master_audio)) if len(master_audio) > 0 else 0
                 if max_peak > 0.98:
                     master_audio = (master_audio / max_peak) * 0.98
                     
                 master_narration_path = os.path.join(temp_dir, "master_narration.wav")
                 sf.write(master_narration_path, master_audio, sr, subtype='PCM_16')
-                sys.stderr.write(f"Built synchronized master narration track: {len(sorted_clips)} clips, duration: {len(master_audio)/sr:.2f}s\n")
+                sys.stderr.write(f"Built synchronized master narration track: {len(sorted_clips)} clips, duration: {actual_narration_dur:.2f}s (video source: {vid_dur:.2f}s)\n")
             except Exception as e:
                 sys.stderr.write(f"Python master narration builder notice: {e}\n")
                 master_narration_path = None
@@ -977,13 +874,18 @@ def render_video_sync(job_config):
         # Scale to Target Resolution (with portrait vs landscape awareness)
         if resolution != "original":
             if is_portrait:
-                target_scale = "1080:1920" if resolution == "1080p" else "720:1280"
+                target_w, target_h = (1080, 1920) if resolution == "1080p" else (720, 1280)
             else:
-                target_scale = "1920:1080" if resolution == "1080p" else "1280:720"
-            vf_chain.append(f"scale={target_scale}:force_original_aspect_ratio=decrease,pad={target_scale}:(ow-iw)/2:(oh-ih)/2:black")
+                target_w, target_h = (1920, 1080) if resolution == "1080p" else (1280, 720)
+            vf_chain.append(f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:black")
+            curr_w, curr_h = target_w, target_h
+        else:
+            curr_w = int(probe_info.get("width", 1920) or 1920)
+            curr_h = int(probe_info.get("height", 1080) or 1080)
             
-        # AI Watermark & Logo Cleaner Filters
-        if cleaner_config.get("enabled") and cleaner_config.get("zones"):
+        # AI Watermark & Logo Cleaner Filters (Skip delogo/blur if video was already AI-cleaned via inpainting)
+        is_already_cleaned = bool(video_path and ("clean_" in os.path.basename(video_path).lower() or "cleaned" in os.path.basename(video_path).lower()))
+        if cleaner_config.get("enabled") and cleaner_config.get("zones") and not is_already_cleaned:
             for zone in cleaner_config.get("zones", []):
                 x_pct = float(zone.get("xPercent", 0)) / 100.0
                 y_pct = float(zone.get("yPercent", 0)) / 100.0
@@ -991,12 +893,17 @@ def render_video_sync(job_config):
                 h_pct = float(zone.get("heightPercent", 0)) / 100.0
                 method = zone.get("method", "smart_delogo")
                 
+                px_x = max(0, min(curr_w - 2, int(round(curr_w * x_pct))))
+                px_y = max(0, min(curr_h - 2, int(round(curr_h * y_pct))))
+                px_w = max(1, min(curr_w - px_x, int(round(curr_w * w_pct))))
+                px_h = max(1, min(curr_h - px_y, int(round(curr_h * h_pct))))
+                
                 if method == "cinematic_backdrop":
-                    vf_chain.append(f"drawbox=x=iw*{x_pct:.3f}:y=ih*{y_pct:.3f}:w=iw*{w_pct:.3f}:h=ih*{h_pct:.3f}:color=black@0.85:t=fill")
-                elif method == "smart_delogo":
-                    vf_chain.append(f"delogo=x=round(iw*{x_pct:.3f}):y=round(ih*{y_pct:.3f}):w=round(iw*{w_pct:.3f}):h=round(ih*{h_pct:.3f}):band=1:show=0")
+                    vf_chain.append(f"drawbox=x={px_x}:y={px_y}:w={px_w}:h={px_h}:color=black@0.85:t=fill")
+                elif method == "gaussian_blur":
+                    vf_chain.append(f"split[main][blur];[blur]crop={px_w}:{px_h}:{px_x}:{px_y},gblur=sigma=12[blurred];[main][blurred]overlay={px_x}:{px_y}")
                 else:
-                    vf_chain.append(f"delogo=x=round(iw*{x_pct:.3f}):y=round(ih*{y_pct:.3f}):w=round(iw*{w_pct:.3f}):h=round(ih*{h_pct:.3f}):band=2:show=0")
+                    vf_chain.append(f"delogo=x={px_x}:y={px_y}:w={px_w}:h={px_h}:show=0")
 
         # Watermark Overlay (with Khmer TrueType Font)
         if watermark.get("enabled") and watermark.get("text") and watermark_text_file and os.path.exists(watermark_text_file):
@@ -1039,7 +946,27 @@ def render_video_sync(job_config):
             else:
                 vf_chain.append(f"subtitles='{esc_ass}'")
 
-        video_filter_str = ",".join(vf_chain) if vf_chain else "null"
+        # If total narration duration exceeds source video duration, extend video by freezing last frame
+        # so speech is 100% complete and video never cuts off before the voice finishes speaking!
+        vid_dur = float(probe_info.get("duration", 0.0) or 0.0)
+        has_video_audio = bool(probe_info.get("has_audio", False))
+        total_output_duration = max(vid_dur, actual_narration_dur) if has_tts else vid_dur
+        if total_output_duration <= 0.1:
+            total_output_duration = 10.0
+
+        if has_tts and actual_narration_dur > vid_dur + 0.1:
+            pad_dur = max(0.2, (actual_narration_dur - vid_dur) + 0.5)
+            vf_chain.append(f"tpad=stop_mode=clone:stop_duration={pad_dur:.2f}")
+            total_output_duration = vid_dur + pad_dur
+            sys.stderr.write(f"Extended video by {pad_dur:.2f}s with clone freeze-frame to match full narration duration ({actual_narration_dur:.2f}s)\n")
+
+        # Always normalize video PTS to start from 0 — critical for sync when source videos
+        # have non-zero start PTS (common in MKV/MP4 files from streaming downloads)
+        pts_reset = "setpts=PTS-STARTPTS"
+        if vf_chain:
+            video_filter_str = pts_reset + "," + ",".join(vf_chain)
+        else:
+            video_filter_str = pts_reset
         filter_complex_parts = []
 
         if sub_input_idx is not None and sub_overlay:
@@ -1047,39 +974,48 @@ def render_video_sync(job_config):
             filter_complex_parts.append(f"[0:v]{video_filter_str}[v_base]")
             # Second filter overlays animated HarfBuzz subtitle stream
             sub_margin = sub_overlay.get("margin_v", 55)
-            filter_complex_parts.append(f"[v_base][{sub_input_idx}:v]overlay=x=(W-w)/2:y=H-h-{sub_margin}:shortest=0[outv]")
+            filter_complex_parts.append(f"[v_base][{sub_input_idx}:v]overlay=x=(W-w)/2:y=H-h-{sub_margin}:shortest=0:eof_action=pass[outv]")
         else:
             filter_complex_parts.append(f"[0:v]{video_filter_str}[outv]")
         
-        # 7. Audio Filter Complex (Multi-track studio mixing with normalize=0)
+        # 7. Audio Filter Complex (Multi-track studio mixing with normalize=0 and missing-audio stream tolerance)
         orig_vol = float(audio_settings.get("originalAudioVolume", 0.0) if has_tts else 1.0)
         bgm_vol = float(audio_settings.get("bgmVolume", 0.30) if has_bgm else 0.0)
         tts_vol = float(audio_settings.get("ttsVolume", 1.25) if has_tts else 1.0)
         
         audio_mix_inputs = []
         
-        # Stream 0: Source Video Audio
-        if orig_vol > 0.01:
-            filter_complex_parts.append(f"[0:a]volume={orig_vol:.2f}[orig_aud]")
+        # Stream 0: Source Video Audio (ONLY included if video file actually contains an audio stream)
+        if has_video_audio and orig_vol > 0.01:
+            filter_complex_parts.append(
+                f"[0:a]asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,volume={orig_vol:.2f}[orig_aud]"
+            )
             audio_mix_inputs.append("[orig_aud]")
             
-        # Stream BGM Audio
+        # Stream BGM Audio (Loop if short, trim and fade-out smoothly at exact video duration)
         if has_bgm and bgm_input_idx is not None and bgm_vol > 0.01:
-            filter_complex_parts.append(f"[{bgm_input_idx}:a]volume={bgm_vol:.2f}[bgm_aud]")
+            fade_st = max(0.0, total_output_duration - 2.0)
+            filter_complex_parts.append(
+                f"[{bgm_input_idx}:a]aloop=loop=-1:size=2e+09,volume={bgm_vol:.2f},atrim=0:{total_output_duration:.2f},afade=t=out:st={fade_st:.2f}:d=2.0[bgm_aud]"
+            )
             audio_mix_inputs.append("[bgm_aud]")
             
         # Stream TTS Master Narration Audio
-        if has_tts and master_narration_path and tts_input_idx is not None:
+        if has_tts and master_narration_path and tts_input_idx is not None and tts_vol > 0.01:
             filter_complex_parts.append(f"[{tts_input_idx}:a]volume={tts_vol:.2f}[tts_aud]")
             audio_mix_inputs.append("[tts_aud]")
             
         if len(audio_mix_inputs) == 0:
-            filter_complex_parts.append("[0:a]volume=1.0[outa]")
+            if has_video_audio:
+                filter_complex_parts.append("[0:a]asetpts=PTS-STARTPTS,volume=1.0[outa]")
+            else:
+                filter_complex_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={total_output_duration:.2f}[outa]")
         elif len(audio_mix_inputs) == 1:
             filter_complex_parts.append(f"{audio_mix_inputs[0]}anull[outa]")
         else:
             mix_str = "".join(audio_mix_inputs)
-            filter_complex_parts.append(f"{mix_str}amix=inputs={len(audio_mix_inputs)}:duration=first:dropout_transition=0:normalize=0[outa]")
+            # duration=longest: take longest stream so TTS narration never gets cut short
+            filter_complex_parts.append(f"{mix_str}amix=inputs={len(audio_mix_inputs)}:duration=longest:dropout_transition=0:normalize=0[outa]")
             
         full_filter_complex = ";".join(filter_complex_parts)
         

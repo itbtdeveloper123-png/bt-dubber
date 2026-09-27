@@ -80,30 +80,55 @@ export async function getFFmpeg(onProgress?: (percent: number, statusText: strin
 
 /**
  * Transcodes any video file (HEVC/H.265, MOV, AVI, MKV, iPhone clips) to standard H.264 + AAC MP4
- * Optimized for ULTRA-FAST processing (480p preview scale, fastdecode tuning, 24fps)
- * taking only a few seconds instead of minutes.
+ * Optimized for ULTRA-FAST processing taking only a few seconds.
  */
 export async function convertVideoToH264MP4(
-  file: File,
-  onProgress?: (percent: number, statusText: string) => void
+  fileOrBlobOrUrl: File | Blob | string | null | undefined,
+  onProgress?: (percent: number, statusText: string) => void,
+  customFileName?: string
 ): Promise<File> {
   try {
+    if (!fileOrBlobOrUrl) {
+      throw new Error('No valid video file or URL provided for transcoding');
+    }
+
     if (onProgress) onProgress(5, 'រៀបចំទិន្នន័យវីដេអូដើម...');
 
-    const ffmpeg = await getFFmpeg(onProgress);
-    const { fetchFile } = await import('@ffmpeg/util');
+    let inputData: any;
+    let safeFileName = customFileName || 'video.mp4';
 
-    const ext = file.name.split('.').pop() || 'mp4';
+    if (typeof fileOrBlobOrUrl === 'string') {
+      safeFileName = customFileName || fileOrBlobOrUrl.split('/').pop()?.split('?')[0] || 'video.mp4';
+      const fetchTarget = fileOrBlobOrUrl.startsWith('http') || fileOrBlobOrUrl.startsWith('blob:') 
+        ? fileOrBlobOrUrl 
+        : `${window.location.origin}${fileOrBlobOrUrl.startsWith('/') ? '' : '/'}${fileOrBlobOrUrl}`;
+      
+      const res = await fetch(fetchTarget);
+      if (!res.ok) throw new Error(`Could not fetch video from URL: ${res.status}`);
+      const ab = await res.arrayBuffer();
+      inputData = new Uint8Array(ab);
+    } else if (fileOrBlobOrUrl instanceof Blob) {
+      if (fileOrBlobOrUrl instanceof File && fileOrBlobOrUrl.name) {
+        safeFileName = fileOrBlobOrUrl.name;
+      }
+      const { fetchFile } = await import('@ffmpeg/util');
+      inputData = await fetchFile(fileOrBlobOrUrl);
+    } else {
+      throw new Error('Unsupported video source format');
+    }
+
+    const ffmpeg = await getFFmpeg(onProgress);
+    const ext = (safeFileName.split('.').pop() || 'mp4').toLowerCase();
     const inputName = `input_${Date.now()}.${ext}`;
     const outputName = `converted_${Date.now()}.mp4`;
 
     if (onProgress) onProgress(20, 'បញ្ចូលវីដេអូទៅកាន់ Ultra-Fast Memory...');
-    await ffmpeg.writeFile(inputName, await fetchFile(file));
+    await ffmpeg.writeFile(inputName, inputData);
 
     if (onProgress) onProgress(35, 'ចាប់ផ្តើមបម្លែង Video Codec ល្បឿនលឿន (Turbo Web MP4)...');
 
     // HIGH-DEFINITION HD H.264 ENCODING:
-    // Retains full native resolution (1080p / 2K) with crisp CRF 21 for crystal-clear HD preview!
+    // Retains full native resolution with crisp CRF 21 for crystal-clear HD preview!
     await ffmpeg.exec([
       '-i', inputName,
       '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
@@ -140,7 +165,8 @@ export async function convertVideoToH264MP4(
       blob = new Blob([data as any], { type: 'video/mp4' });
     }
 
-    const newFileName = file.name.replace(/\.[^/.]+$/, '') + '_web_h264.mp4';
+    const cleanBaseName = safeFileName.replace(/\.[^/.]+$/, '');
+    const newFileName = `${cleanBaseName}_web_h264.mp4`;
     const convertedFile = new File([blob], newFileName, { type: 'video/mp4' });
 
     if (onProgress) onProgress(100, 'បម្លែងវីដេអូបានជោគជ័យ 100%!');

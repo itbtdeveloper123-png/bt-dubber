@@ -101,6 +101,9 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [acZoomScale, setAcZoomScale] = useState<number>(antiCopyright?.zoomScale ?? 1.0);
   const [showAcDetails, setShowAcDetails] = useState<boolean>(false);
 
+  // Logo / Subtitle Delogo Cleaner (Disabled on export by default to guarantee 100% crystal-clear output without smudges/blur)
+  const [bakeCleaner, setBakeCleaner] = useState<boolean>(false);
+
   // Live Result Preview State
   const [showLivePreview, setShowLivePreview] = useState<boolean>(true);
   const [previewSegmentIndex, setPreviewSegmentIndex] = useState<number>(0);
@@ -173,6 +176,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       });
   }, [folders, savedRecaps, recapData]);
 
+  // List of all unique recaps across savedRecaps + recapData
+  const allAvailableRecaps = React.useMemo(() => {
+    const list: MovieRecapResult[] = [];
+    if (recapData) list.push(recapData);
+    (savedRecaps || []).forEach(r => {
+      if (!list.some(x => x.id === r.id || (x.movie_title && x.movie_title === r.movie_title))) {
+        list.push(r);
+      }
+    });
+    return list;
+  }, [recapData, savedRecaps]);
+
+  const [selectedRecapId, setSelectedRecapId] = useState<string | number | undefined>(() => {
+    return recapData?.id || allAvailableRecaps[0]?.id;
+  });
+
   const [selectedFolderName, setSelectedFolderName] = useState<string>(() => {
     return initialFolder || recapData?.folderName || recapData?.seriesTitle || (availableFolders[0]?.folderName || '');
   });
@@ -182,7 +201,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     return availableFolders.find(f => f.folderName === selectedFolderName) || availableFolders[0] || null;
   }, [availableFolders, selectedFolderName]);
 
-  const currentRecap = recapData || activeFolderData?.episodes[0] || null;
+  const currentRecap = allAvailableRecaps.find(r => r.id === selectedRecapId) || recapData || activeFolderData?.episodes[0] || allAvailableRecaps[0] || null;
   const cleanFileName = (currentRecap?.movie_title || selectedFolderName || 'BT_Dubber_Project')
     .replace(/[^\w\s\u1780-\u17FF-]/g, '')
     .trim()
@@ -341,7 +360,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             position: watermarkPos,
             opacity: watermarkOpacity
           },
-          cleanerConfig: watermarkCleanerConfig || { enabled: false, zones: [] },
+          cleanerConfig: (bakeCleaner && watermarkCleanerConfig?.enabled && !currentRecap?.videoFileName?.startsWith('clean_') && !currentRecap?.videoUrl?.includes('clean_')) ? watermarkCleanerConfig : { enabled: false, zones: [] },
           lipSyncConfig: lipSyncConfig || { enabled: false },
           voiceRolesMapping: currentRecap?.voiceRolesMapping || (() => {
             try {
@@ -437,7 +456,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             position: watermarkPos,
             opacity: watermarkOpacity
           },
-          cleanerConfig: watermarkCleanerConfig || { enabled: false, zones: [] },
+          cleanerConfig: (bakeCleaner && watermarkCleanerConfig?.enabled && !currentRecap?.videoFileName?.startsWith('clean_') && !currentRecap?.videoUrl?.includes('clean_')) ? watermarkCleanerConfig : { enabled: false, zones: [] },
           lipSyncConfig: lipSyncConfig || { enabled: false },
           voiceRolesMapping: currentRecap?.voiceRolesMapping || (() => {
             try {
@@ -544,7 +563,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           position: watermarkPos,
           opacity: watermarkOpacity
         },
-        cleanerConfig: watermarkCleanerConfig || { enabled: false, zones: [] },
+        cleanerConfig: (bakeCleaner && watermarkCleanerConfig?.enabled && !currentRecap?.videoFileName?.startsWith('clean_') && !currentRecap?.videoUrl?.includes('clean_')) ? watermarkCleanerConfig : { enabled: false, zones: [] },
         lipSyncConfig: lipSyncConfig || { enabled: false, faceEnhancer: true, pads: [0, 10, 0, 0], targetScope: 'all_dialogue' },
         voiceRolesMapping: currentRecap.voiceRolesMapping || (() => {
           try {
@@ -648,7 +667,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         {/* Tab Navigation */}
-        <div className="px-4 pt-3 bg-slate-950/60 border-b border-slate-800/80 flex items-center gap-2 font-khmer text-xs font-bold">
+        <div className="px-4 pt-3 bg-slate-950/60 border-b border-slate-800/80 flex items-center gap-2 font-khmer text-xs font-bold overflow-x-auto scrollbar-none shrink-0 whitespace-nowrap">
           <button
             type="button"
             onClick={() => setActiveTab('video')}
@@ -720,6 +739,38 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
                 <span>📁 Export ទាំង Folder ({availableFolders.length} Folders)</span>
               </button>
+            </div>
+          )}
+
+          {/* SINGLE EPISODE / PROJECT SELECTOR */}
+          {exportScope === 'single' && allAvailableRecaps.length > 1 && (
+            <div className="p-3 bg-gradient-to-br from-blue-950/40 via-slate-950/80 to-slate-950 border border-blue-500/40 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-blue-300 font-khmer flex items-center gap-1.5">
+                  <Film className="w-3.5 h-3.5 text-blue-400" />
+                  <span>🎬 ជ្រើសរើសរឿង ឬភាគដែលត្រូវ Export ({allAvailableRecaps.length} រឿង)៖</span>
+                </label>
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold font-mono">
+                  {currentRecap?.recap_segments?.length || 0} ឈុត
+                </span>
+              </div>
+
+              <select
+                value={selectedRecapId || currentRecap?.id || ''}
+                onChange={(e) => {
+                  setSelectedRecapId(e.target.value);
+                  setDownloadUrl(null);
+                  setBatchResult(null);
+                  setError(null);
+                }}
+                className="w-full bg-slate-900 border border-blue-500/50 rounded-xl px-3 py-2 text-xs font-bold text-white font-khmer focus:outline-none focus:border-blue-400"
+              >
+                {allAvailableRecaps.map((r, idx) => (
+                  <option key={r.id || `recap_${idx}`} value={r.id}>
+                    🎬 {r.movie_title || `Project #${idx + 1}`} {r.folderName ? `[${r.folderName}]` : ''} ({r.recap_segments?.length || 0} ឈុត)
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -1692,6 +1743,31 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                       </div>
                     </div>
                   )}
+
+                  {/* 🔄 Action Buttons: Render Another Movie or Re-adjust */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDownloadUrl(null);
+                        setBatchResult(null);
+                        setError(null);
+                        setProgress(0);
+                      }}
+                      className="flex-1 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-khmer font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer border border-slate-700 active:scale-95"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-blue-400" />
+                      <span>✨ Render រឿង/ភាគផ្សេងទៀត</span>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white font-khmer text-xs transition cursor-pointer border border-slate-800 active:scale-95"
+                    >
+                      <span>បិទ</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1739,6 +1815,31 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                     <Download className="w-4 h-4" />
                     <span>⬇️ ទាញយក Video MP4 ({resolution.toUpperCase()})</span>
                   </a>
+
+                  {/* 🔄 Action Buttons: Render Another Movie or Re-adjust */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDownloadUrl(null);
+                        setBatchResult(null);
+                        setError(null);
+                        setProgress(0);
+                      }}
+                      className="flex-1 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-khmer font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer border border-slate-700 active:scale-95"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 text-blue-400" />
+                      <span>✨ Render រឿង/ភាគផ្សេងទៀត</span>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white font-khmer text-xs transition cursor-pointer border border-slate-800 active:scale-95"
+                    >
+                      <span>បិទ</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

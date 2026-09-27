@@ -475,11 +475,14 @@ export const TranscriptInput: React.FC<TranscriptInputProps> = ({
               onChange={(e) => setRecapStyle(e.target.value as RecapStyle)}
               className="w-full bg-[#16191E] border border-[#2D2F36] rounded px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-amber-500"
             >
-              <option value="dramatic_action">⚡ Dramatic Action & Suspense</option>
-              <option value="emotional_romance">💖 Emotional Romance & Melodrama</option>
-              <option value="dark_mystery">👻 Dark Mystery / Horror Thriller</option>
-              <option value="fast_comedy">🔥 Fast-Paced Comedy & Fun</option>
-              <option value="intense_thriller">🗡️ Intense Mind Games & Revenge</option>
+              <option value="chinese_historical_wuxia">👑 រឿងចិនបុរាណ / ក្បាច់គុន / ទេវកថា (Chinese Historical / Wuxia)</option>
+              <option value="anime_manga">⚡ រឿង Anime / គំនូរជីវចលជប៉ុន (Anime & Manga)</option>
+              <option value="korean_romance_drama">💖 រឿងភាគកូរ៉េ / មនោសញ្ចេតនា (K-Drama & Romance)</option>
+              <option value="hollywood_scifi_action">🚀 រឿងហូលីវូដ / វិទ្យាសាស្ត្រ / បាញ់ប្រហារ (Hollywood Sci-Fi / Action)</option>
+              <option value="dark_horror_mystery">👻 រឿងខ្មោច / ព្រឺព្រួច / អាថ៌កំបាំង (Horror & Mystery)</option>
+              <option value="fast_comedy">🔥 រឿងកំប្លែង / សើចសប្បាយ (Comedy & Fun)</option>
+              <option value="general_modern_recap">🎬 រឿងទូទៅ / សម្រាយរឿងបែបទំនើប (General Movie Recap)</option>
+              <option value="dramatic_action">⚡ សកម្មភាពរន្ធត់ & វាយប្រហារ (Dramatic Action)</option>
             </select>
           </div>
 

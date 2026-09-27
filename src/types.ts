@@ -64,12 +64,25 @@ export interface MovieRecapResult {
   voiceRolesMapping?: VoiceRolesMapping;
   watermarkCleanerConfig?: WatermarkCleanerConfig;
   lipSyncConfig?: LipSyncConfig;
+  thumbnailUrl?: string;
+  thumbnailConfig?: ReelsThumbnailConfig;
   old_title?: string;
 }
 
 export type SourceLanguage = 'auto' | 'en' | 'zh' | 'ko' | 'th';
 
-export type RecapStyle = 'dramatic_action' | 'emotional_romance' | 'dark_mystery' | 'fast_comedy' | 'intense_thriller';
+export type RecapStyle = 
+  | 'dramatic_action' 
+  | 'chinese_historical_wuxia'
+  | 'anime_manga'
+  | 'korean_romance_drama'
+  | 'hollywood_scifi_action'
+  | 'dark_horror_mystery'
+  | 'fast_comedy'
+  | 'general_modern_recap'
+  | 'emotional_romance'
+  | 'dark_mystery'
+  | 'intense_thriller';
 
 export interface GenerationParams {
   transcript?: string;
@@ -229,6 +242,8 @@ export interface CleanerZone {
 export interface WatermarkCleanerConfig {
   enabled: boolean;
   zones: CleanerZone[];
+  colabUrl?: string;
+  engine?: 'lama' | 'telea' | 'delogo';
 }
 
 export interface LipSyncConfig {
@@ -239,6 +254,45 @@ export interface LipSyncConfig {
   targetScope: 'all_dialogue' | 'selected_segments';
   selectedSegmentIds?: number[];
   batchSize?: number;
+}
+
+export type ThumbnailBadgeStyle = 
+  | 'golden_vip' 
+  | 'neon_red' 
+  | 'cyber_cyan' 
+  | 'cinematic_pill' 
+  | 'ribbon' 
+  | 'solid_box';
+
+export type ThumbnailLayoutMode = 'single_hero' | 'split_2' | 'split_3';
+
+export type ThumbnailTextStyle = 
+  | 'gold_gradient' 
+  | 'fiery_red' 
+  | 'white_black_stroke' 
+  | 'cyber_yellow' 
+  | 'royal_purple';
+
+export interface ReelsThumbnailConfig {
+  movieTitle: string;
+  episodeText: string;             // e.g. "ភាគ ០១", "ភាគ 01", "Ep. 05", "ភាគបញ្ចប់"
+  taglineText: string;             // e.g. "សម្រាយសាច់រឿងលម្អិត", "វគ្គកម្ចាត់បិសាច"
+  badgeStyle: ThumbnailBadgeStyle;
+  badgePosition: 'top_center' | 'safe_center' | 'top_left' | 'top_right';
+  badgeScale: number;              // 0.8 to 1.5
+  textStyle: ThumbnailTextStyle;
+  fontFamily: string;              // 'Moul' | 'Kantumruy Pro' | 'Battambang' | 'Bayon' | 'Siemreap'
+  titleFontSize: number;           // 40 to 120
+  layoutMode: ThumbnailLayoutMode;
+  heroImage: string;               // base64 or url
+  splitImages?: string[];          // For split_2 or split_3
+  showSafeZoneGuide: boolean;
+  showVignette: boolean;
+  tagStickers: string[];           // e.g. ['🔥 កំពុងល្បី', '🎬 រឿងភាគថ្មី']
+  brightness: number;              // 0.5 to 1.5
+  contrast: number;                // 0.5 to 1.5
+  saturation: number;              // 0 to 2.0
+  aspectRatio: '9:16' | '16:9' | '1:1';
 }
 
 declare global {

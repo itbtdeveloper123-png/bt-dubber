@@ -9,7 +9,9 @@ export async function extractBgmInstrumentalTrack(
   fileOrBlob: File | Blob | null,
   onProgress?: (percent: number, statusText: string) => void,
   customFileName?: string,
-  serverVideoUrl?: string
+  serverVideoUrl?: string,
+  customColabUrl?: string,
+  aggressiveness?: number
 ): Promise<{ file: File; blobUrl: string }> {
   const safeFileName = (fileOrBlob instanceof File && fileOrBlob.name)
     ? fileOrBlob.name
@@ -18,7 +20,27 @@ export async function extractBgmInstrumentalTrack(
   try {
     if (onProgress) onProgress(5, 'កំពុងរៀបចំដំណើរការ AI Vocal Remover...');
 
-    let payload: any = { fileName: safeFileName };
+    const savedColabUrl = customColabUrl || 
+      localStorage.getItem('bgm_colab_url') || 
+      localStorage.getItem('cleaner_colab_url') || 
+      localStorage.getItem('voxcpm2_colab_url') || 
+      '';
+
+    const savedBleedMode = localStorage.getItem('bgm_bleed_suppression') || 'clean';
+    let aggValue = 1.2;
+    if (typeof aggressiveness === 'number' && !isNaN(aggressiveness)) {
+      aggValue = aggressiveness;
+    } else if (savedBleedMode === 'standard') {
+      aggValue = 0.8;
+    } else if (savedBleedMode === 'ultra') {
+      aggValue = 1.6;
+    }
+
+    let payload: any = { 
+      fileName: safeFileName,
+      colabUrl: savedColabUrl.trim() || undefined,
+      aggressiveness: aggValue
+    };
 
     // 1. Resolve media url if it is hosted on server (/api/media/...)
     let resolvedMediaUrl = '';
