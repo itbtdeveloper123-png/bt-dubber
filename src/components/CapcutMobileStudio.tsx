@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   X,
   Search,
@@ -22,19 +22,15 @@ import {
   Sparkles,
   Download,
   Trash2,
-  Mic,
-  Smile,
   CheckCircle,
-  Eye,
   RefreshCw,
-  FolderOpen,
   Key,
   ShieldCheck,
   Video,
   Server,
   Wifi
 } from 'lucide-react';
-import { MovieRecapResult, RecapSegment, VoiceRolesMapping } from '../types';
+import { MovieRecapResult, RecapSegment } from '../types';
 import { getApiBaseUrl, setApiBaseUrl } from '../utils/apiConfig';
 
 interface CapcutMobileStudioProps {
@@ -154,9 +150,8 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
   const [isClipMuted, setIsClipMuted] = useState<boolean>(false);
   const [resolutionMenuOpen, setResolutionMenuOpen] = useState<boolean>(false);
   const [selectedQuality, setSelectedQuality] = useState<string>('AI UHD');
-  const timelineScrollRef = useRef<HTMLDivElement>(null);
 
-  // Server PC Connection Settings (For Remote Python Render & SQLite DB)
+  // Server PC Connection Settings
   const [serverUrlInput, setServerUrlInput] = useState<string>(() => getApiBaseUrl());
   const [isCheckingServer, setIsCheckingServer] = useState<boolean>(false);
   const [serverStatus, setServerStatus] = useState<'connected' | 'disconnected' | 'unknown'>('unknown');
@@ -174,7 +169,7 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
         setServerStatus('disconnected');
         onToast('error', '⚠️ មិនអាចភ្ជាប់បានទេ', 'សូមពិនិត្យមើល IP និងធានាថាបានបើក npm run dev លើកុំព្យូទ័រ');
       }
-    } catch (e) {
+    } catch {
       setServerStatus('disconnected');
       onToast('error', '⚠️ បរាជ័យក្នុងការភ្ជាប់', 'សូមប្រាកដថាទូរស័ព្ទ និងកុំព្យូទ័រភ្ជាប់ WiFi តែមួយ');
     } finally {
@@ -199,21 +194,92 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
     return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
-  // Sync timeline scroll to current playhead
-  useEffect(() => {
-    if (!timelineScrollRef.current || totalDurationSeconds <= 0) return;
-    const progress = currentTimeSeconds / totalDurationSeconds;
-    const scrollWidth = timelineScrollRef.current.scrollWidth - timelineScrollRef.current.clientWidth;
-    if (scrollWidth > 0 && isPlaying) {
-      timelineScrollRef.current.scrollLeft = progress * scrollWidth;
+  // -------------------------------------------------------------
+  // ⚡ CAPCUT FLUID TOUCH TIMELINE SCRUBBER MECHANICS
+  // -------------------------------------------------------------
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const isUserTouchingRef = useRef<boolean>(false);
+  const touchStartXRef = useRef<number>(0);
+  const scrollStartRef = useRef<number>(0);
+
+  // Scale: 40 pixels per second gives a smooth, tactile scrubbing feel
+  const PIXELS_PER_SECOND = 40;
+
+  const effectiveDuration = Math.max(3, totalDurationSeconds || 30);
+  const timelineContentWidth = Math.round(effectiveDuration * PIXELS_PER_SECOND);
+
+  // Time ruler ticks spaced neatly (every 5s or 10s depending on duration)
+  const timeTicks = useMemo(() => {
+    const step = effectiveDuration > 300 ? 10 : effectiveDuration > 60 ? 5 : 2;
+    const ticks: number[] = [];
+    for (let s = 0; s <= effectiveDuration + step; s += step) {
+      ticks.push(s);
     }
-  }, [currentTimeSeconds, totalDurationSeconds, isPlaying]);
+    return ticks;
+  }, [effectiveDuration]);
+
+  // Touch Drag: User puts finger down on timeline
+  const handleTouchStart = (e: React.TouchEvent) => {
+    isUserTouchingRef.current = true;
+    touchStartXRef.current = e.touches[0].clientX;
+    if (timelineScrollRef.current) {
+      scrollStartRef.current = timelineScrollRef.current.scrollLeft;
+    }
+  };
+
+  // Touch Move: User drags timeline horizontally across center needle
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isUserTouchingRef.current || !timelineScrollRef.current) return;
+    const currentX = e.touches[0].clientX;
+    const deltaX = currentX - touchStartXRef.current;
+    
+    // Move scroll in opposite direction of finger drag
+    const newScrollLeft = Math.max(0, scrollStartRef.current - deltaX);
+    timelineScrollRef.current.scrollLeft = newScrollLeft;
+
+    // Calculate exact time in seconds
+    const targetSeconds = Math.max(0, Math.min(effectiveDuration, newScrollLeft / PIXELS_PER_SECOND));
+
+    // Seek video in real-time
+    if (videoRef.current) {
+      videoRef.current.currentTime = targetSeconds;
+    }
+  };
+
+  // Touch End: User lifts finger
+  const handleTouchEnd = () => {
+    if (!isUserTouchingRef.current || !timelineScrollRef.current) return;
+    isUserTouchingRef.current = false;
+    const finalSeconds = Math.max(0, Math.min(effectiveDuration, timelineScrollRef.current.scrollLeft / PIXELS_PER_SECOND));
+    onSeek(finalSeconds);
+  };
+
+  // Native onScroll listener for momentum flicking
+  const handleTimelineScroll = useCallback(() => {
+    if (!timelineScrollRef.current || isPlaying) return;
+    const targetSeconds = Math.max(0, Math.min(effectiveDuration, timelineScrollRef.current.scrollLeft / PIXELS_PER_SECOND));
+    if (videoRef.current && Math.abs(videoRef.current.currentTime - targetSeconds) > 0.15) {
+      videoRef.current.currentTime = targetSeconds;
+    }
+  }, [effectiveDuration, isPlaying, videoRef]);
+
+  // Sync scroll position with video playback
+  useEffect(() => {
+    if (!timelineScrollRef.current || isUserTouchingRef.current) return;
+    if (isPlaying) {
+      const targetScroll = currentTimeSeconds * PIXELS_PER_SECOND;
+      timelineScrollRef.current.scrollLeft = targetScroll;
+    }
+  }, [currentTimeSeconds, isPlaying]);
 
   return (
-    <div className="flex md:hidden flex-col h-[100dvh] w-full bg-[#000000] text-white font-khmer select-none overflow-hidden safe-area-inset">
+    <div className="flex md:hidden flex-col h-[100dvh] w-full bg-[#000000] text-white font-khmer select-none overflow-hidden">
       
       {/* 1. TOP CAPCUT NAVIGATION BAR */}
-      <header className="h-12 px-3 flex items-center justify-between bg-[#0a0a0a] border-b border-white/10 shrink-0 z-30">
+      <header
+        className="h-11 px-3 flex items-center justify-between bg-[#0a0a0a] border-b border-white/10 shrink-0 z-30"
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 4px)' }}
+      >
         {/* Left: Close & Search */}
         <div className="flex items-center gap-2">
           <button
@@ -232,7 +298,7 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
           </button>
         </div>
 
-        {/* Center: Pro badge & Resolution Selector */}
+        {/* Center: Resolution Selector */}
         <div className="flex items-center gap-2">
           <div className="relative">
             <button
@@ -278,15 +344,15 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
       </header>
 
       {/* 2. VIDEO PREVIEW PLAYER AREA */}
-      <div className="relative flex-1 flex flex-col items-center justify-center bg-[#000000] p-2 min-h-0 overflow-hidden">
-        {/* Video Player Box */}
+      <div className="relative flex-1 min-h-0 flex flex-col items-center justify-center bg-[#000000] p-1.5 overflow-hidden">
+        {/* Video Box with Controlled Height */}
         <div
-          className={`relative max-w-full max-h-full flex items-center justify-center bg-black rounded-lg overflow-hidden border border-white/5 shadow-2xl ${
+          className={`relative max-w-full flex items-center justify-center bg-black rounded-lg overflow-hidden border border-white/10 shadow-2xl ${
             aspectRatio === '9:16'
-              ? 'aspect-[9/16] h-full max-h-[46vh]'
+              ? 'aspect-[9/16] h-full max-h-[35vh]'
               : aspectRatio === '1:1'
-              ? 'aspect-square h-full max-h-[44vh]'
-              : 'aspect-video w-full max-w-md'
+              ? 'aspect-square h-full max-h-[35vh]'
+              : 'aspect-video w-full max-w-sm max-h-[35vh]'
           }`}
         >
           {recapData?.videoUrl ? (
@@ -302,33 +368,33 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
               onClick={onOpenUpload}
               className="w-full h-full flex flex-col items-center justify-center gap-2 p-4 text-center cursor-pointer hover:bg-white/5 transition"
             >
-              <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-cyan-400">
-                <Plus className="w-6 h-6" />
+              <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-cyan-400">
+                <Plus className="w-5 h-5" />
               </div>
               <p className="text-xs text-gray-300 font-bold">ចុចដើម្បី Upload វីដេអូ</p>
-              <p className="text-[10px] text-gray-500">គាំទ្រ MP4, MOV, ទូរស័ព្ទ iPhone</p>
+              <p className="text-[10px] text-gray-500">គាំទ្រ MP4, MOV iPhone</p>
             </div>
           )}
 
           {/* Subtitles Overlay */}
           {subtitleConfig.enabled && currentActiveSegment?.khmer_script && (
             <div
-              className={`absolute inset-x-3 pointer-events-none text-center px-2 py-1 ${
+              className={`absolute inset-x-2 pointer-events-none text-center px-2 py-1 ${
                 subtitleConfig.position === 'top'
-                  ? 'top-4'
+                  ? 'top-3'
                   : subtitleConfig.position === 'middle'
                   ? 'top-1/2 -translate-y-1/2'
-                  : 'bottom-4'
+                  : 'bottom-3'
               }`}
             >
               <span
                 style={{
                   fontFamily: subtitleConfig.fontFamily || 'sans-serif',
-                  fontSize: `${Math.max(14, subtitleConfig.fontSize * 0.75)}px`,
+                  fontSize: `${Math.max(13, subtitleConfig.fontSize * 0.7)}px`,
                   color: subtitleConfig.primaryColor || '#FFFFFF',
                   textShadow: `0 0 4px ${subtitleConfig.outlineColor || '#000000'}, 0 2px 4px rgba(0,0,0,0.8)`
                 }}
-                className="font-bold leading-relaxed px-2 py-0.5 rounded bg-black/40 backdrop-blur-2xs inline-block max-w-[90%]"
+                className="font-bold leading-relaxed px-2 py-0.5 rounded bg-black/50 backdrop-blur-2xs inline-block max-w-[95%]"
               >
                 {currentActiveSegment.khmer_script}
               </span>
@@ -337,7 +403,7 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
         </div>
 
         {/* Player Transport Controls Strip (Under Video) */}
-        <div className="w-full max-w-md px-3 pt-2 pb-1 flex items-center justify-between text-gray-400 text-xs shrink-0">
+        <div className="w-full max-w-sm px-3 pt-1.5 pb-0.5 flex items-center justify-between text-gray-400 text-xs shrink-0">
           {/* Left: Fullscreen */}
           <button
             onClick={() => {
@@ -346,179 +412,187 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
                 else if ((videoRef.current as any).webkitEnterFullscreen) (videoRef.current as any).webkitEnterFullscreen();
               }
             }}
-            className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
+            className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
             title="ពេញអេក្រង់"
           >
-            <Maximize2 className="w-4 h-4" />
+            <Maximize2 className="w-3.5 h-3.5" />
           </button>
 
           {/* Center: Big Play/Pause Button */}
           <button
             onClick={onTogglePlay}
-            className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center active:scale-90 shadow-lg shadow-white/20 transition cursor-pointer"
+            className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center active:scale-90 shadow-md shadow-white/20 transition cursor-pointer"
             title="Play / Pause"
           >
-            {isPlaying ? <Pause className="w-4 h-4 fill-black" /> : <Play className="w-4 h-4 fill-black ml-0.5" />}
+            {isPlaying ? <Pause className="w-3.5 h-3.5 fill-black" /> : <Play className="w-3.5 h-3.5 fill-black ml-0.5" />}
           </button>
 
           {/* Right: Undo & Redo */}
           <div className="flex items-center gap-1">
             <button
               onClick={() => onSeek(Math.max(0, currentTimeSeconds - 3))}
-              className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
+              className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
               title="ថយ 3s"
             >
-              <Undo2 className="w-4 h-4" />
+              <Undo2 className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={() => onSeek(Math.min(totalDurationSeconds, currentTimeSeconds + 3))}
-              className="w-8 h-8 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
+              onClick={() => onSeek(Math.min(effectiveDuration, currentTimeSeconds + 3))}
+              className="w-7 h-7 rounded-full flex items-center justify-center active:scale-90 hover:text-white"
               title="ទៅមុខ 3s"
             >
-              <Redo2 className="w-4 h-4" />
+              <Redo2 className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Timecode Indicators: 00:00 / 00:05 */}
-        <div className="w-full max-w-md px-4 flex items-center justify-between text-[11px] font-mono text-gray-400 font-bold shrink-0">
-          <span>{formatTime(currentTimeSeconds)} / {formatTime(totalDurationSeconds)}</span>
+        {/* Timecode Indicators: 00:00 / 02:48 */}
+        <div className="w-full max-w-sm px-3 flex items-center justify-between text-[11px] font-mono text-gray-400 font-bold shrink-0">
+          <span>{formatTime(currentTimeSeconds)} / {formatTime(effectiveDuration)}</span>
           <span className="text-[10px] text-gray-500 font-sans">
             {recapData?.recap_segments?.length || 0} វគ្គសម្រាយ
           </span>
         </div>
       </div>
 
-      {/* 3. CAPCUT MULTI-TRACK TIMELINE WITH VERTICAL PLAYHEAD */}
-      <div className="relative h-44 bg-[#141414] border-y border-white/10 flex flex-col shrink-0 overflow-hidden">
+      {/* 3. CAPCUT MULTI-TRACK TIMELINE (TOUCH SCRUBBER & NO OVERLAP) */}
+      <div className="relative h-40 bg-[#121212] border-y border-white/10 flex shrink-0 overflow-hidden select-none">
         
-        {/* Timeline Header with Time Ticks */}
-        <div className="h-6 bg-[#1a1a1a] border-b border-white/5 flex items-center px-24 text-[10px] font-mono text-gray-400 justify-between select-none">
-          <span>00:00</span>
-          <span>·</span>
-          <span>00:02</span>
-          <span>·</span>
-          <span>00:04</span>
-          <span>·</span>
-          <span>00:06</span>
-          <span>·</span>
-          <span>00:08</span>
-          <span>·</span>
-          <span>00:10</span>
+        {/* Fixed Center White Playhead Needle (z-30) */}
+        <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-white z-30 pointer-events-none shadow-[0_0_8px_rgba(255,255,255,0.9)]">
+          <div className="w-3 h-2 bg-white rounded-b -translate-x-[5px] shadow-md" />
         </div>
 
-        {/* Center Vertical Playhead Needle (White line right in the center) */}
-        <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-white z-20 pointer-events-none shadow-[0_0_8px_rgba(255,255,255,0.8)]">
-          <div className="w-2.5 h-2.5 bg-white rounded-full -translate-x-[4px] -translate-y-1 shadow-md" />
-        </div>
+        {/* Left Column: Fixed Track Headers (w-18) */}
+        <div className="w-18 bg-[#181818] border-r border-white/10 flex flex-col z-20 shrink-0 shadow-md">
+          {/* Row 0: Ruler spacer */}
+          <div className="h-6 border-b border-white/5 flex items-center justify-center text-[9px] font-mono text-gray-500">
+            SEC
+          </div>
 
-        {/* Timeline Body: Left Track Headers & Right Horizontally Scrollable Lanes */}
-        <div className="flex-1 flex overflow-hidden">
-          
-          {/* Left Column: Track Controls Header */}
-          <div className="w-24 bg-[#181818] border-r border-white/10 flex flex-col justify-between py-1 px-1 z-10 shrink-0">
-            {/* Track 1: Video Controls (Mute clip & Cover) */}
-            <div className="flex items-center gap-1">
-              <button
-                onClick={toggleMuteClip}
-                className={`flex-1 py-1 px-1 rounded flex flex-col items-center justify-center text-[9px] active:scale-95 transition ${
-                  isClipMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/5 text-gray-300 hover:bg-white/10'
-                }`}
-                title="បិទសំឡេងឃ្លីប"
-              >
-                {isClipMuted ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
-                <span className="leading-tight mt-0.5 scale-90">បិទសំឡេង</span>
-              </button>
+          {/* Row 1: Video Controls (Mute & Cover) */}
+          <div className="h-10 flex items-center justify-around px-1 border-b border-white/5">
+            <button
+              onClick={toggleMuteClip}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition active:scale-95 ${
+                isClipMuted ? 'bg-red-500/20 text-red-400' : 'bg-white/10 text-gray-300'
+              }`}
+              title="បិទ/បើកសំឡេងឃ្លីប"
+            >
+              {isClipMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              onClick={onOpenThumbnailModal}
+              className="w-7 h-7 rounded-lg bg-cyan-950/40 border border-cyan-500/40 text-cyan-300 flex items-center justify-center active:scale-95 transition"
+              title="ក្រប Reels AI"
+            >
+              <Edit3 className="w-3.5 h-3.5 text-cyan-400" />
+            </button>
+          </div>
 
-              <button
-                onClick={onOpenThumbnailModal}
-                className="w-9 h-9 rounded bg-[#222222] border border-white/15 flex flex-col items-center justify-center text-[9px] text-cyan-300 active:scale-95 transition hover:border-cyan-400 shrink-0"
-                title="ក្រប Reels"
-              >
-                <Edit3 className="w-3 h-3 text-cyan-400" />
-                <span className="leading-tight mt-0.5">ក្រប</span>
-              </button>
-            </div>
-
-            {/* Track 2: Audio Icon */}
-            <div className="h-9 flex items-center justify-center text-gray-400 border-t border-white/5">
-              <div className="w-6 h-6 rounded bg-white/5 flex items-center justify-center text-emerald-400">
-                <Music className="w-3.5 h-3.5" />
-              </div>
-            </div>
-
-            {/* Track 3: Text Icon */}
-            <div className="h-9 flex items-center justify-center text-gray-400 border-t border-white/5">
-              <div className="w-6 h-6 rounded bg-white/5 flex items-center justify-center text-amber-400">
-                <Type className="w-3.5 h-3.5" />
-              </div>
+          {/* Row 2: Audio Icon */}
+          <div className="h-9 flex items-center justify-center border-b border-white/5">
+            <div className="w-6 h-6 rounded-md bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <Music className="w-3 h-3" />
             </div>
           </div>
 
-          {/* Right Column: Horizontally Scrollable Lanes */}
+          {/* Row 3: Text Icon */}
+          <div className="h-9 flex items-center justify-center">
+            <div className="w-6 h-6 rounded-md bg-amber-500/20 flex items-center justify-center text-amber-400">
+              <Type className="w-3 h-3" />
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: Horizontally Scrollable Lanes with Touch Dragging */}
+        <div
+          ref={timelineScrollRef}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onScroll={handleTimelineScroll}
+          className="flex-1 overflow-x-auto overflow-y-hidden scrollbar-none relative touch-pan-x cursor-grab active:cursor-grabbing"
+          style={{ paddingLeft: '50%', paddingRight: '50%' }}
+        >
+          {/* Inner Content Sized to Timeline Duration */}
           <div
-            ref={timelineScrollRef}
-            className="flex-1 overflow-x-auto overflow-y-hidden flex flex-col justify-between py-1 px-4 space-y-1 scrollbar-none"
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const clickX = e.clientX - rect.left;
-              const ratio = clickX / rect.width;
-              if (totalDurationSeconds > 0) {
-                onSeek(ratio * totalDurationSeconds);
-              }
-            }}
+            className="flex flex-col justify-between py-0.5 space-y-1"
+            style={{ width: `${timelineContentWidth}px` }}
           >
-            {/* Lane 1: Main Video Filmstrip Track */}
-            <div className="h-10 flex items-center gap-1 min-w-max">
-              {recapData?.videoUrl ? (
-                <div className="h-9 px-3 rounded-md bg-[#252525] border border-white/20 flex items-center gap-2 shadow-inner">
-                  <Film className="w-3.5 h-3.5 text-cyan-400" />
-                  <span className="text-[11px] font-bold text-gray-200 max-w-[140px] truncate">
-                    {recapData.videoFileName || 'វីដេអូចម្បង'}
+            
+            {/* ROW 0: SCROLLABLE TIME RULER (NEVER OVERLAPS!) */}
+            <div className="h-6 relative border-b border-white/5 select-none pointer-events-none">
+              {timeTicks.map((sec) => (
+                <div
+                  key={sec}
+                  className="absolute top-0 -translate-x-1/2 flex flex-col items-center"
+                  style={{ left: `${sec * PIXELS_PER_SECOND}px` }}
+                >
+                  <span className="text-[9px] font-mono text-gray-400 font-bold leading-tight">
+                    {formatTime(sec)}
                   </span>
-                  <span className="text-[10px] text-gray-400 font-mono">
-                    {formatTime(totalDurationSeconds)}
+                  <div className="w-0.5 h-1.5 bg-white/20 mt-0.5" />
+                </div>
+              ))}
+            </div>
+
+            {/* ROW 1: MAIN VIDEO TRACK */}
+            <div className="h-10 flex items-center gap-1.5">
+              {recapData?.videoUrl ? (
+                <div
+                  className="h-9 px-3 rounded-lg bg-[#252525] border border-white/20 flex items-center justify-between gap-2 shadow-inner"
+                  style={{ width: `${Math.max(160, timelineContentWidth)}px` }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Film className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                    <span className="text-[11px] font-bold text-gray-200 truncate">
+                      {recapData.videoFileName || 'វីដេអូចម្បង'}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-gray-400 font-mono shrink-0">
+                    {formatTime(effectiveDuration)}
                   </span>
                 </div>
               ) : (
                 <button
                   onClick={onOpenUpload}
-                  className="h-9 px-3 rounded-md bg-white/5 border border-dashed border-white/20 flex items-center gap-1.5 text-xs text-gray-400 active:scale-95"
+                  className="h-9 px-3 rounded-lg bg-white/5 border border-dashed border-white/20 flex items-center gap-1.5 text-xs text-gray-400 active:scale-95"
                 >
                   <Plus className="w-3.5 h-3.5 text-cyan-400" />
                   <span>បញ្ចូលវីដេអូ</span>
                 </button>
               )}
 
-              {/* Big Plus Button at end of Video Track */}
+              {/* Plus Button at end of Video */}
               <button
                 onClick={onOpenUpload}
-                className="w-9 h-9 rounded-md bg-white/10 hover:bg-white/20 active:scale-95 border border-white/15 flex items-center justify-center text-white transition cursor-pointer shrink-0"
+                className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 active:scale-95 border border-white/15 flex items-center justify-center text-white transition cursor-pointer shrink-0"
                 title="បន្ថែមវីដេអូថ្មី"
               >
-                <Plus className="w-5 h-5" />
+                <Plus className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Lane 2: Audio Track (+ បញ្ចូលសំឡេង) */}
-            <div className="h-9 flex items-center min-w-max">
+            {/* ROW 2: AUDIO TRACK */}
+            <div className="h-9 flex items-center">
               <button
                 onClick={() => setActiveTool('audio')}
-                className="h-7 px-3 rounded-md bg-[#1c2920] border border-emerald-500/30 text-emerald-300 flex items-center gap-1.5 text-[11px] active:scale-95 hover:bg-[#223328] transition"
+                className="h-7 px-3 rounded-lg bg-[#1c2920] border border-emerald-500/30 text-emerald-300 flex items-center gap-1.5 text-[11px] font-bold active:scale-95 transition"
               >
                 <Plus className="w-3 h-3" />
-                <span>បញ្ចូលសំឡេង (AI Dubbing / BGM)</span>
+                <span>+ បញ្ចូលសំឡេង (AI Dubbing / BGM)</span>
               </button>
             </div>
 
-            {/* Lane 3: Text / Subtitle Track (+ បញ្ចូលអក្សរ) */}
-            <div className="h-9 flex items-center min-w-max">
+            {/* ROW 3: TEXT / SUBTITLE TRACK */}
+            <div className="h-9 flex items-center">
               <button
                 onClick={() => setActiveTool('text')}
-                className="h-7 px-3 rounded-md bg-[#2b2417] border border-amber-500/30 text-amber-300 flex items-center gap-1.5 text-[11px] active:scale-95 hover:bg-[#382e1d] transition"
+                className="h-7 px-3 rounded-lg bg-[#2b2417] border border-amber-500/30 text-amber-300 flex items-center gap-1.5 text-[11px] font-bold active:scale-95 transition"
               >
                 <Plus className="w-3 h-3" />
-                <span>បញ្ចូលអក្សរ (ស្គ្រីប & Subtitle)</span>
+                <span>+ បញ្ចូលអក្សរ (ស្គ្រីប & Subtitle)</span>
               </button>
             </div>
 
@@ -526,91 +600,92 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
         </div>
       </div>
 
-      {/* 4. BOTTOM CAPCUT TOOLBAR DOCK (Exact match with user screenshot) */}
-      <footer className="h-16 px-1 bg-[#0a0a0a] border-t border-white/10 flex items-center justify-around shrink-0 z-30 overflow-x-auto scrollbar-none">
-        
-        {/* 1. កែ (Edit / Cut / Split) */}
+      {/* 4. BOTTOM CAPCUT TOOLBAR DOCK (CLEANLY SPACED & NOT CUT OFF) */}
+      <footer
+        className="h-14 px-1 bg-[#0c0c0c] border-t border-white/10 flex items-center justify-around shrink-0 z-30"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 8px)' }}
+      >
+        {/* 1. កែ (Edit) */}
         <button
           onClick={() => setActiveTool(activeTool === 'edit' ? 'none' : 'edit')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'edit' ? 'text-cyan-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Scissors className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">កែ</span>
+          <Scissors className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">កែ</span>
         </button>
 
-        {/* 2. សំឡេង (Audio: Dubbing, TTS, BGM Remover) */}
+        {/* 2. សំឡេង (Audio) */}
         <button
           onClick={() => setActiveTool(activeTool === 'audio' ? 'none' : 'audio')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'audio' ? 'text-emerald-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Music className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">សំឡេង</span>
+          <Music className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">សំឡេង</span>
         </button>
 
-        {/* 3. អត្ថបទ (Text: Script, Subtitles, Karaoke) */}
+        {/* 3. អត្ថបទ (Text) */}
         <button
           onClick={() => setActiveTool(activeTool === 'text' ? 'none' : 'text')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'text' ? 'text-amber-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Type className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">អត្ថបទ</span>
+          <Type className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">អត្ថបទ</span>
         </button>
 
-        {/* 4. បែបផែន (Effects: Lip Sync, Watermark Cleaner) */}
+        {/* 4. បែបផែន (Effects) */}
         <button
           onClick={() => setActiveTool(activeTool === 'effects' ? 'none' : 'effects')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'effects' ? 'text-purple-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Star className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">បែបផែន</span>
+          <Star className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">បែបផែន</span>
         </button>
 
-        {/* 5. វីដេអូត្រួតគ្នា (Overlay: Saved Recaps & Media Library) */}
+        {/* 5. វីដេអូត្រួតគ្នា (Overlay) */}
         <button
           onClick={() => setActiveTool(activeTool === 'overlay' ? 'none' : 'overlay')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'overlay' ? 'text-blue-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Layers className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">វីដេអូត្រួតគ្នា</span>
+          <Layers className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">ត្រួតគ្នា</span>
         </button>
 
-        {/* 6. ចំណងជើង (Cover & Aspect Ratio) */}
+        {/* 6. ចំណងជើង (Cover) */}
         <button
           onClick={() => setActiveTool(activeTool === 'cover' ? 'none' : 'cover')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'cover' ? 'text-rose-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Film className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">ចំណងជើង</span>
+          <Film className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">ចំណងជើង</span>
         </button>
 
-        {/* 7. តម្រង (Filters / Settings / Compressor) */}
+        {/* 7. តម្រង (Settings) */}
         <button
           onClick={() => setActiveTool(activeTool === 'filters' ? 'none' : 'filters')}
-          className={`flex flex-col items-center justify-center px-2 py-1 min-w-[50px] transition active:scale-90 ${
+          className={`w-12 flex flex-col items-center justify-center transition active:scale-90 ${
             activeTool === 'filters' ? 'text-orange-400 font-bold' : 'text-gray-300 hover:text-white'
           }`}
         >
-          <Sliders className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">តម្រង</span>
+          <Sliders className="w-4.5 h-4.5 mb-0.5" />
+          <span className="text-[10px] leading-tight">តម្រង</span>
         </button>
-
       </footer>
 
-      {/* 5. CAPCUT INTERACTIVE SUB-SHEETS / PANELS */}
+      {/* 5. CAPCUT INTERACTIVE SUB-SHEETS / DRAWERS */}
       {activeTool !== 'none' && (
-        <div className="fixed inset-x-0 bottom-16 max-h-[58vh] bg-[#161616] border-t border-white/15 rounded-t-2xl shadow-2xl flex flex-col z-40 animate-in slide-in-from-bottom duration-200">
+        <div className="fixed inset-x-0 bottom-14 max-h-[58vh] bg-[#161616] border-t border-white/15 rounded-t-2xl shadow-2xl flex flex-col z-40 animate-in slide-in-from-bottom duration-200">
           
           {/* Header of Sheet with Close */}
           <div className="h-10 px-4 flex items-center justify-between border-b border-white/10 shrink-0">
@@ -947,8 +1022,8 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
                   <span className="font-bold text-gray-300 block">ទម្រង់អេក្រង់ (Aspect Ratio)</span>
                   <div className="flex items-center gap-2">
                     {[
-                      { id: '16:9', label: '16:9 ទេសភាព (YouTube)' },
-                      { id: '9:16', label: '9:16 បញ្ឈរ (TikTok / Reels)' },
+                      { id: '16:9', label: '16:9 ទេសភាព' },
+                      { id: '9:16', label: '9:16 បញ្ឈរ (Reels)' },
                       { id: '1:1', label: '1:1 ការ៉េ' }
                     ].map((r) => (
                       <button
@@ -1018,6 +1093,7 @@ export const CapcutMobileStudio: React.FC<CapcutMobileStudioProps> = ({
                     </button>
                   </div>
                 </div>
+
                 <button
                   onClick={() => {
                     onOpenCompressor();

@@ -119,10 +119,12 @@ export async function processAndExtractAudio(
     
     const duration = decodedBuffer.duration;
     const cappedDuration = Math.min(duration, isMobile ? 300 : 1800); // 5 mins on mobile, 30 mins on desktop
-    const targetSampleRate = 16000;
+    // WebKit Safari strictly requires hardware-supported sample rate (e.g. 44100 or audioCtx.sampleRate). 16000 causes "The string did not match the expected pattern"
+    const targetSampleRate = audioCtx.sampleRate || 44100;
     const targetLength = Math.floor(cappedDuration * targetSampleRate);
 
-    const offlineCtx = new OfflineAudioContext(1, targetLength, targetSampleRate);
+    const OfflineAudioCtx = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    const offlineCtx = new OfflineAudioCtx(1, Math.max(100, targetLength), targetSampleRate);
     const source = offlineCtx.createBufferSource();
     source.buffer = decodedBuffer;
     source.connect(offlineCtx.destination);

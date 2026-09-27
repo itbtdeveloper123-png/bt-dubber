@@ -498,10 +498,13 @@ export default function App() {
         previousContext: episodeInfo?.previousContext
       });
     } catch (err: any) {
-      console.error('Error processing uploaded file:', err);
+      console.warn('Error processing uploaded file:', err);
       setIsProcessingFile(false);
       setIsLoading(false);
-      setError(err.message || 'បរាជ័យក្នុងការអាន និងបកប្រែវីដេអូ។ សូមព្យាយាមម្តងទៀត!');
+      const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (!isMobile) {
+        setError(err.message || 'បរាជ័យក្នុងការអាន និងបកប្រែវីដេអូ។ សូមព្យាយាមម្តងទៀត!');
+      }
     }
   };
 
