@@ -92,7 +92,12 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
   onInsertFolderToSequence,
   onSelectRecap
 }) => {
-  const [activeTab, setActiveTab] = useState<'folder_batch' | 'upload' | 'sample' | 'link'>('folder_batch');
+  const [activeTab, setActiveTab] = useState<'folder_batch' | 'upload' | 'sample' | 'link'>(() => {
+    if (typeof window !== 'undefined' && (window.innerWidth < 768 || (typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)))) {
+      return 'upload';
+    }
+    return 'folder_batch';
+  });
   const [dragActive, setDragActive] = useState(false);
   const [videoUrlInput, setVideoUrlInput] = useState('');
 
@@ -225,28 +230,31 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
     setBatchQueue(prev => prev.map(x => x.id === item.id ? { ...x, status: 'uploading', statusText: '📤 កំពុង Upload វីដេអូ...' } : x));
     
     let serverVideoUrl = URL.createObjectURL(file);
-    try {
-      const reader = new FileReader();
-      const fileBase64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
-          const res = (reader.result as string).split(',')[1] || (reader.result as string);
-          resolve(res);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!isMobile && file.size < 30 * 1024 * 1024) {
+      try {
+        const reader = new FileReader();
+        const fileBase64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const res = (reader.result as string).split(',')[1] || (reader.result as string);
+            resolve(res);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
 
-      const uploadRes = await fetch('/api/upload-media', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileBase64, fileName: file.name, autoCompress: true })
-      });
-      if (uploadRes.ok) {
-        const uploadData = await uploadRes.json();
-        serverVideoUrl = uploadData.fileUrl || uploadData.url || `/api/media/${uploadData.fileName}`;
+        const uploadRes = await fetch('/api/upload-media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileBase64, fileName: file.name, autoCompress: true })
+        });
+        if (uploadRes.ok) {
+          const uploadData = await uploadRes.json();
+          serverVideoUrl = uploadData.fileUrl || uploadData.url || `/api/media/${uploadData.fileName}`;
+        }
+      } catch (uploadErr) {
+        console.warn('Server upload media failed, using local Blob URL:', uploadErr);
       }
-    } catch (uploadErr) {
-      console.warn('Server upload media failed, using local Blob URL:', uploadErr);
     }
 
     // 2. Extract Audio & Call Gemini AI to Translate
@@ -580,7 +588,14 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
                   <div className="flex flex-wrap items-center gap-2.5 pt-2">
                     <button
                       type="button"
-                      onClick={() => folderInputRef.current?.click()}
+                      onClick={() => {
+                        const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                        if (isMobile) {
+                          multiFileInputRef.current?.click();
+                        } else {
+                          folderInputRef.current?.click();
+                        }
+                      }}
                       className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-lg shadow-blue-600/20 transition cursor-pointer active:scale-95"
                     >
                       <Folder className="w-4 h-4" />
@@ -963,7 +978,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="video/*,audio/*,.mp4,.mkv,.mov,.webm,.avi"
+                  accept="video/*,audio/*"
                   onChange={(e) => {
                     if (e.target.files && e.target.files[0]) {
                       onFileUpload(e.target.files[0], getEpisodeInfo());

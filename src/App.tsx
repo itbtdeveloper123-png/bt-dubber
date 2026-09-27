@@ -391,39 +391,45 @@ export default function App() {
       recap_segments: []
     });
 
-    // Save video file permanently to server storage so it never expires when reopening from DB
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const base64 = (reader.result as string).split(',')[1];
-        const res = await fetch('/api/upload-media', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileBase64: base64,
-            fileName: file.name,
-            mimeType: file.type,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url) {
-            console.log('✅ Video saved & auto-compressed on server:', data.url, data.isCompressed ? `(Saved ${data.savedPercent})` : '');
-            setCurrentRecap((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                videoUrl: data.url,
-                videoFileName: data.fileName || file.name
-              };
-            });
+    // Save video file permanently to server storage (Desktop only with file size < 30MB)
+    // On mobile devices, reading large video files into Base64 causes WebKit memory crash!
+    const isMobileDevice = typeof navigator !== 'undefined' && 
+      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+    if (!isMobileDevice && file.size < 30 * 1024 * 1024) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64 = (reader.result as string).split(',')[1];
+          const res = await fetch('/api/upload-media', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileBase64: base64,
+              fileName: file.name,
+              mimeType: file.type,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.url) {
+              console.log('✅ Video saved & auto-compressed on server:', data.url, data.isCompressed ? `(Saved ${data.savedPercent})` : '');
+              setCurrentRecap((prev) => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  videoUrl: data.url,
+                  videoFileName: data.fileName || file.name
+                };
+              });
+            }
           }
+        } catch (uploadErr) {
+          console.warn('Permanent media upload notice:', uploadErr);
         }
-      } catch (uploadErr) {
-        console.warn('Permanent media upload notice:', uploadErr);
-      }
-    };
-    reader.readAsDataURL(file);
+      };
+      reader.readAsDataURL(file);
+    }
 
     // Auto-transcode iPhone / HEVC / MOV videos in parallel to standard H.264 Web MP4
     if (file.type.startsWith('video/') && isLikelyUnsupportedVideo(file)) {

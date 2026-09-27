@@ -5,12 +5,22 @@ let ffmpegInstance: any = null;
  * (e.g. HEVC / H.265 from iPhone IMG_*.MP4, Apple ProRes, QuickTime MOV, MKV, AVI, etc.)
  */
 export function isLikelyUnsupportedVideo(fileOrName: File | string): boolean {
+  // On Mobile devices (iOS / Android), native hardware decoders already handle MOV, HEVC and MP4 natively!
+  // WebAssembly FFmpeg on mobile exceeds memory limits and causes WebKit to crash/exit.
+  if (typeof navigator !== 'undefined') {
+    const isMobileOrApple = /Android|iPhone|iPad|iPod|Macintosh/i.test(navigator.userAgent) || 
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (isMobileOrApple) {
+      return false; // Always use native mobile hardware playback!
+    }
+  }
+
   const name = typeof fileOrName === 'string' ? fileOrName : fileOrName.name;
   if (!name) return false;
 
-  // Check unsupported container / codec extensions
+  // Check unsupported container / codec extensions for desktop browsers
   const ext = name.split('.').pop()?.toLowerCase() || '';
-  if (['mov', 'mkv', 'avi', 'flv', 'wmv', 'ts', 'm4v', 'hevc'].includes(ext)) {
+  if (['mkv', 'avi', 'flv', 'wmv', 'ts', 'hevc'].includes(ext)) {
     return true;
   }
 

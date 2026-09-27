@@ -39,13 +39,27 @@ jobs:
           fi
           npx cap sync ios
 
-      - name: Configure iOS Project (Disable Code Signing for Sideloading)
+      - name: Configure iOS Project (Disable Code Signing for Sideloading & Add Permissions)
         run: |
           cd ios/App
           # Disable automatic signing requirements for unsigned sideload build
           sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' App.xcodeproj/project.pbxproj || true
           sed -i '' 's/DEVELOPMENT_TEAM = "[^"]*";/DEVELOPMENT_TEAM = "";/g' App.xcodeproj/project.pbxproj || true
           sed -i '' 's/CODE_SIGN_IDENTITY = "[^"]*";/CODE_SIGN_IDENTITY = "";/g' App.xcodeproj/project.pbxproj || true
+
+          # Inject iOS Privacy Permission Keys into Info.plist (Prevents instant iOS crash when opening file picker, camera, or mic)
+          PLIST="App/Info.plist"
+          if [ -f "$PLIST" ]; then
+            echo "Configuring Info.plist permissions..."
+            /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'BT-Dubber requires access to your photo library to import videos and audio.'" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription 'BT-Dubber requires access to your photo library to import videos and audio.'" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'BT-Dubber requires permission to save exported videos to your photo library.'" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryAddUsageDescription 'BT-Dubber requires permission to save exported videos to your photo library.'" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'BT-Dubber requires camera access to capture video footage.'" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription 'BT-Dubber requires camera access to capture video footage.'" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'BT-Dubber requires microphone access for voice dubbing and recording.'" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'BT-Dubber requires microphone access for voice dubbing and recording.'" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || true
+            echo "Info.plist configured successfully!"
+          fi
           cd ../..
 
       - name: Build iOS Archive (xcodebuild)

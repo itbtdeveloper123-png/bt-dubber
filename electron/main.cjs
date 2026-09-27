@@ -232,8 +232,11 @@ async function createWindow() {
 
   mainWindow.show();
 
-  // Open external links in user's default browser
+  // Open external links in user's default browser (keep internal localhost/blob URLs inside app)
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.includes('127.0.0.1') || url.includes('localhost') || url.startsWith('blob:') || url.startsWith('data:')) {
+      return { action: 'allow' };
+    }
     if (url.startsWith('http:') || url.startsWith('https:')) {
       shell.openExternal(url);
     }

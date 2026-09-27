@@ -57,28 +57,30 @@ export async function processAndExtractAudio(
     });
   }
 
-  // 1. Try server-side FFmpeg 100% full audio extraction (Super fast, flawless, extracts 100% of duration)
-  try {
-    const reader = new FileReader();
-    const base64Promise = new Promise<string>((resolve, reject) => {
-      reader.onload = () => {
-        const res = (reader.result as string || '').split(',')[1];
-        if (res) resolve(res);
-        else reject(new Error('Empty base64'));
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+  // 1. Try server-side FFmpeg 100% full audio extraction (Desktop/Server only)
+  const isMobileDevice = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (!isMobileDevice && file.size < 50 * 1024 * 1024) {
+    try {
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const res = (reader.result as string || '').split(',')[1];
+          if (res) resolve(res);
+          else reject(new Error('Empty base64'));
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
 
-    const fileBase64 = await base64Promise;
-    const serverRes = await fetch('/api/extract-full-audio', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fileBase64,
-        fileName: safeName
-      })
-    });
+      const fileBase64 = await base64Promise;
+      const serverRes = await fetch('/api/extract-full-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileBase64,
+          fileName: safeName
+        })
+      });
 
     if (serverRes.ok) {
       const data = await serverRes.json();
@@ -93,9 +95,21 @@ export async function processAndExtractAudio(
   } catch (serverErr) {
     console.warn('Server FFmpeg audio extraction notice, trying browser WebAudio:', serverErr);
   }
+}
 
   // 2. Client-side Browser WebAudio Extraction
   try {
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    // On mobile devices, decoding massive video files (> 35MB) exceeds WebKit's 256MB RAM limit and causes instant iOS app crash
+    if (isMobile && file.size > 35 * 1024 * 1024) {
+      console.warn('⚠️ File is too large for mobile in-memory WebAudio decoding (>35MB). Skipping memory-heavy decode to prevent iOS crash.');
+      return {
+        base64: '',
+        mimeType: file.type || 'video/mp4'
+      };
+    }
+
     const arrayBuffer = await file.arrayBuffer();
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) throw new Error('AudioContext not supported');
@@ -104,7 +118,7 @@ export async function processAndExtractAudio(
     const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     
     const duration = decodedBuffer.duration;
-    const cappedDuration = Math.min(duration, 1800); // Up to 30 minutes
+    const cappedDuration = Math.min(duration, isMobile ? 300 : 1800); // 5 mins on mobile, 30 mins on desktop
     const targetSampleRate = 16000;
     const targetLength = Math.floor(cappedDuration * targetSampleRate);
 
@@ -135,7 +149,17 @@ export async function processAndExtractAudio(
 
   } catch (err) {
     console.warn('Browser audio extraction error:', err);
-    // Fallback: Read full file as base64
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
+    // If file is > 25MB on mobile, do NOT read as Base64 to prevent OOM crash
+    if (isMobile || file.size > 30 * 1024 * 1024) {
+      return {
+        base64: '',
+        mimeType: file.type || 'video/mp4'
+      };
+    }
+
+    // Fallback for smaller files: Read full file as base64
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {

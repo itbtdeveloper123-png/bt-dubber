@@ -123,28 +123,31 @@ export const VideoMonitor: React.FC<VideoMonitorProps> = ({
       onUpdateVideoUrl(localUrl, file.name, file);
     }
 
-    // Save permanently to server in background so it never expires again
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const base64 = (reader.result as string).split(',')[1];
-        const res = await fetch('/api/upload-media', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileBase64: base64, fileName: file.name, mimeType: file.type }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url && onUpdateVideoUrl) {
-            console.log('✅ Video reconnected and permanently saved to server:', data.url);
-            onUpdateVideoUrl(data.url, file.name, file);
+    // Save permanently to server in background so it never expires again (Desktop only, <30MB)
+    const isMobile = typeof navigator !== 'undefined' && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!isMobile && file.size < 30 * 1024 * 1024) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64 = (reader.result as string).split(',')[1];
+          const res = await fetch('/api/upload-media', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileBase64: base64, fileName: file.name, mimeType: file.type }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.url && onUpdateVideoUrl) {
+              console.log('✅ Video reconnected and permanently saved to server:', data.url);
+              onUpdateVideoUrl(data.url, file.name, file);
+            }
           }
+        } catch (e) {
+          console.warn('Reconnect media upload error:', e);
         }
-      } catch (e) {
-        console.warn('Reconnect media upload error:', e);
-      }
-    };
-    reader.readAsDataURL(file);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   // Check if current file is purely an audio file
